@@ -1,0 +1,42 @@
+﻿# GLITCH.EXE Git Ignore
+
+# Visual Studio
+.vs/
+**/.vs/
+
+# Secrets
+.env
+*.env
+
+# Python cache
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Runtime databases
+*.db
+*.sqlite
+*.sqlite3
+
+# GLITCH local settings
+glitch_settings.json
+
+# Generated audio
+glitch_voice_test.wav
+
+# Logs
+*.log
+
+# OS junk
+Thumbs.db
+.DS_Store
+
+# Legacy duplicate data folder
+GLITCH_EXE/Data Folder/
