@@ -2,8 +2,6 @@ import os
 import json
 import time
 import socket
-import ctypes
-import subprocess
 
 from pathlib import Path
 
@@ -54,6 +52,7 @@ from PySide6.QtMultimedia import (
 
 
 from core.assistant import GlitchAssistant
+from services.application_service import ApplicationService
 
 from voice.voice_engine import VoiceEngine
 from voice.voice_listener import VoiceListener
@@ -358,6 +357,15 @@ class GlitchWindow(QMainWindow):
 
         self.assistant = (
             GlitchAssistant()
+        )
+
+
+        # =================================================
+        # APPLICATION SERVICE
+        # =================================================
+
+        self.application_service = (
+            ApplicationService()
         )
 
 
@@ -3165,58 +3173,24 @@ class GlitchWindow(QMainWindow):
     # MEDIA
     # =====================================================
 
-    def press_media_key(
-        self,
-        virtual_key
-    ):
-
-        KEYEVENTF_KEYUP = (
-            0x0002
-        )
-
-
-        ctypes.windll.user32.keybd_event(
-            virtual_key,
-            0,
-            0,
-            0
-        )
-
-
-        ctypes.windll.user32.keybd_event(
-            virtual_key,
-            0,
-            KEYEVENTF_KEYUP,
-            0
-        )
-
-
     def media_play_pause(self):
 
-        self.press_media_key(
-            0xB3
-        )
+        self.application_service.media_play_pause()
 
 
     def media_next(self):
 
-        self.press_media_key(
-            0xB0
-        )
+        self.application_service.media_next()
 
 
     def media_previous(self):
 
-        self.press_media_key(
-            0xB1
-        )
+        self.application_service.media_previous()
 
 
     def media_stop(self):
 
-        self.press_media_key(
-            0xB2
-        )
+        self.application_service.media_stop()
 
 
     # =====================================================
@@ -3228,71 +3202,20 @@ class GlitchWindow(QMainWindow):
         app
     ):
 
-        process_names = {
-
-            "spotify":
-                "Spotify.exe",
-
-            "chrome":
-                "chrome.exe",
-
-            "visualstudio":
-                "devenv.exe",
-
-            "androidstudio":
-                "studio64.exe",
-
-            "seratostudio":
-                "Serato Studio.exe",
-
-            "seratodj":
-                "Serato DJ Pro.exe",
-
-            "notepad":
-                "notepad.exe",
-
-            "calculator":
-                "CalculatorApp.exe",
-        }
-
-
-        process_name = (
-            process_names.get(
-                app
-            )
+        success, message = (
+            self.application_service
+            .close_app(app)
         )
 
 
-        if not process_name:
+        if not success:
 
-            return False
-
-
-        try:
-
-            result = subprocess.run(
-
-                [
-                    "taskkill",
-                    "/IM",
-                    process_name,
-                    "/F",
-                ],
-
-                capture_output=True,
-                text=True
+            self.response_panel.set_response(
+                message
             )
 
 
-            return (
-                result.returncode
-                == 0
-            )
-
-
-        except Exception:
-
-            return False
+        return success
 
 
     def close_app_and_confirm(
@@ -3554,34 +3477,6 @@ class GlitchWindow(QMainWindow):
 
 
     # =====================================================
-    # FIND APPLICATION PATH
-    # =====================================================
-
-    def find_existing_path(
-        self,
-        candidates
-    ):
-
-        for candidate in candidates:
-
-            expanded = (
-                os.path.expandvars(
-                    candidate
-                )
-            )
-
-
-            if Path(
-                expanded
-            ).exists():
-
-                return expanded
-
-
-        return None
-
-
-    # =====================================================
     # LAUNCH APP
     # =====================================================
 
@@ -3590,158 +3485,24 @@ class GlitchWindow(QMainWindow):
         app
     ):
 
-        commands = {
-
-            "explorer":
-                "explorer.exe",
-
-            "notepad":
-                "notepad.exe",
-
-            "calculator":
-                "calc.exe",
-        }
+        success, message = (
+            self.application_service
+            .launch_app(app)
+        )
 
 
-        if app in commands:
+        if success:
 
-            try:
-
-                subprocess.Popen(
-                    [
-                        commands[
-                            app
-                        ]
-                    ]
-                )
-
-
-                self.app_launched(
-                    app
-                )
-
-
-                return True
-
-
-            except Exception as error:
-
-                self.app_error(
-                    app,
-                    error
-                )
-
-                return False
-
-
-        if app == "chrome":
-
-            path = self.find_existing_path(
-                [
-                    r"%ProgramFiles%\Google\Chrome\Application\chrome.exe",
-
-                    r"%ProgramFiles(x86)%\Google\Chrome\Application\chrome.exe",
-
-                    r"%LocalAppData%\Google\Chrome\Application\chrome.exe",
-                ]
+            self.app_launched(
+                app
             )
 
 
-        elif app == "spotify":
-
-            path = self.find_existing_path(
-                [
-                    r"%AppData%\Spotify\Spotify.exe",
-
-                    r"%LocalAppData%\Microsoft\WindowsApps\Spotify.exe",
-                ]
-            )
-
-
-        elif app == "androidstudio":
-
-            path = self.find_existing_path(
-                [
-                    r"%ProgramFiles%\Android\Android Studio\bin\studio64.exe",
-
-                    r"%ProgramFiles%\Android\Android Studio\bin\studio.exe",
-                ]
-            )
-
-
-        elif app == "visualstudio":
-
-            path = self.find_existing_path(
-                [
-                    r"%ProgramFiles%\Microsoft Visual Studio\2022\Community\Common7\IDE\devenv.exe",
-
-                    r"%ProgramFiles%\Microsoft Visual Studio\2022\Professional\Common7\IDE\devenv.exe",
-
-                    r"%ProgramFiles%\Microsoft Visual Studio\2022\Enterprise\Common7\IDE\devenv.exe",
-                ]
-            )
-
-
-        elif app == "seratostudio":
-
-            path = self.find_existing_path(
-                [
-                    r"%ProgramFiles%\Serato\Serato Studio\Serato Studio.exe",
-
-                    r"%LocalAppData%\Serato\Serato Studio\Serato Studio.exe",
-
-                    r"%ProgramFiles(x86)%\Serato\Serato Studio\Serato Studio.exe",
-                ]
-            )
-
-
-        elif app == "seratodj":
-
-            path = self.find_existing_path(
-                [
-                    r"%ProgramFiles%\Serato\Serato DJ Pro\Serato DJ Pro.exe",
-
-                    r"%ProgramFiles(x86)%\Serato\Serato DJ Pro\Serato DJ Pro.exe",
-                ]
-            )
-
-
-        else:
-
-            path = None
-
-
-        if path:
-
-            try:
-
-                subprocess.Popen(
-                    [
-                        path
-                    ]
-                )
-
-
-                self.app_launched(
-                    app
-                )
-
-
-                return True
-
-
-            except Exception as error:
-
-                self.app_error(
-                    app,
-                    error
-                )
-
-                return False
+            return True
 
 
         self.response_panel.set_response(
-            f"APP NOT LOCATED // {app.upper()}"
+            f"APP NOT LOCATED // {app.upper()} // {message}"
         )
 
 

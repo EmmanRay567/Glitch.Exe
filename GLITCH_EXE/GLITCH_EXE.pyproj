@@ -44,6 +44,7 @@
     <Compile Include="models\__init__.py" />
     <Compile Include="repositories\__init__.py" />
     <Compile Include="services\base_service.py" />
+    <Compile Include="services\application_service.py" />
     <Compile Include="services\__init__.py" />
     <Compile Include="ui\command_bar.py" />
     <Compile Include="ui\main_window.py" />
