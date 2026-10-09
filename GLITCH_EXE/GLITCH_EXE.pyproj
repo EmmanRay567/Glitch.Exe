@@ -28,6 +28,8 @@
     <Compile Include="commands\navigation_commands.py" />
     <Compile Include="commands\__init__.py" />
     <Compile Include="config.py" />
+    <Compile Include="controllers\navigation_controller.py" />
+    <Compile Include="controllers\__init__.py" />
     <Compile Include="core\memory.py" />
     <Compile Include="core\assistant.py" />
     <Compile Include="core\event_bus.py" />
@@ -65,6 +67,7 @@
     <Folder Include="commands\" />
     <Folder Include="models\" />
     <Folder Include="integrations\" />
+    <Folder Include="controllers\" />
     <Folder Include="repositories\" />
     <Folder Include="services\" />
     <Folder Include="voice\" />

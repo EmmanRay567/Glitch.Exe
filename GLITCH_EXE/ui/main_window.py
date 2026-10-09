@@ -52,6 +52,10 @@ from PySide6.QtMultimedia import (
 
 
 from core.assistant import GlitchAssistant
+from core.event_bus import EventBus
+from core.command_router import CommandRouter
+from commands.navigation_commands import NavigationCommand
+from controllers.navigation_controller import NavigationController
 from services.application_service import ApplicationService
 
 from voice.voice_engine import VoiceEngine
@@ -366,6 +370,44 @@ class GlitchWindow(QMainWindow):
 
         self.application_service = (
             ApplicationService()
+        )
+
+
+        # =================================================
+        # NAVIGATION ARCHITECTURE
+        # =================================================
+
+        # EventBus lets navigation announce page changes
+        # without directly coupling future listeners to the UI.
+        self.event_bus = (
+            EventBus()
+        )
+
+
+        # NavigationController owns the navigation decision.
+        # It asks this window to render the requested page.
+        self.navigation_controller = (
+            NavigationController(
+                self,
+                self.event_bus
+            )
+        )
+
+
+        # CommandRouter lets buttons, voice, gestures, and
+        # future agents use the same navigation command path.
+        self.command_router = (
+            CommandRouter()
+        )
+
+
+        self.command_router.register(
+            "NAVIGATE",
+            lambda destination:
+                NavigationCommand(
+                    self.navigation_controller,
+                    destination
+                )
         )
 
 
@@ -3950,26 +3992,142 @@ class GlitchWindow(QMainWindow):
 
 
     # =====================================================
-    # PAGE SWITCH
+    # PAGE NAVIGATION RENDERER
     # =====================================================
 
-    def switch_page(
+    def show_page(
         self,
-        page,
-        mode,
-        response,
-        button
+        destination
     ):
+        """
+        Render a requested GLITCH page.
 
-        self.current_mode = (
-            mode
+        NavigationController calls this method after a
+        NavigationCommand has been routed through CommandRouter.
+
+        This method owns only the visual page-switch behavior.
+        """
+
+        destination = (
+            destination
+            .strip()
+            .upper()
         )
 
 
-        if mode in self.ui_sounds:
+        page_map = {
+
+            "HOME": (
+                self.home_page,
+                "HOME // LIVE SYSTEM TELEMETRY",
+                self.sidebar.home_button,
+                "HOME",
+                0.55,
+                9
+            ),
+
+            "CHAT": (
+                self.chat_page,
+                "CHAT // COMMUNICATION CHANNEL READY",
+                self.sidebar.chat_button,
+                "CHAT",
+                0.55,
+                9
+            ),
+
+            "CREATE": (
+                self.create_page_widget,
+                "CREATE // CREATIVE SYSTEMS READY",
+                self.sidebar.create_button,
+                "CREATE",
+                0.55,
+                9
+            ),
+
+            "SEARCH": (
+                self.search_page,
+                "SEARCH // LIVE INFORMATION NETWORK READY",
+                self.sidebar.search_button,
+                "SEARCH",
+                0.55,
+                9
+            ),
+
+            "CODE": (
+                self.code_page,
+                "CODE // DEVELOPMENT ENVIRONMENT READY",
+                self.sidebar.code_button,
+                "CODE",
+                0.55,
+                9
+            ),
+
+            "APPS": (
+                self.apps_page,
+                "APPS // APPLICATION CONTROL READY",
+                self.sidebar.apps_button,
+                "APPS",
+                0.55,
+                9
+            ),
+
+            "SETTINGS": (
+                self.settings_page,
+                "SETTINGS // CONFIGURATION READY",
+                self.sidebar.settings_button,
+                "SETTINGS",
+                0.55,
+                9
+            ),
+
+            # SYSTEM MATRIX is an extension of HOME, so the
+            # HOME sidebar button and HOME sound stay active.
+            "SYSTEM_MATRIX": (
+                self.system_matrix_page,
+                "SYSTEM MATRIX // HARDWARE DIAGNOSTICS ONLINE",
+                self.sidebar.home_button,
+                "HOME",
+                0.90,
+                16
+            ),
+        }
+
+
+        page_info = (
+            page_map.get(
+                destination
+            )
+        )
+
+
+        if page_info is None:
+
+            self.response_panel.set_response(
+                f"NAVIGATION ERROR // UNKNOWN DESTINATION: {destination}"
+            )
+
+            return False
+
+
+        (
+            page,
+            response,
+            active_button,
+            sound_mode,
+            glitch_duration,
+            glitch_intensity
+        ) = page_info
+
+
+        self.current_mode = (
+            destination
+        )
+
+
+        if sound_mode in self.ui_sounds:
 
             self.play_ui_sound(
-                mode
+                sound_mode
             )
 
 
@@ -3988,134 +4146,109 @@ class GlitchWindow(QMainWindow):
         )
 
 
-        if button is not None:
-
-            self.set_active_sidebar_button(
-                button
-            )
-
-
-        self.reactor.trigger_glitch(
-            0.55,
-            9
+        self.set_active_sidebar_button(
+            active_button
         )
 
 
+        self.reactor.trigger_glitch(
+            glitch_duration,
+            glitch_intensity
+        )
+
+
+        return True
+
+
     # =====================================================
-    # NORMAL NAVIGATION
+    # COMMAND-BASED NAVIGATION
     # =====================================================
+
+    def navigate_to(
+        self,
+        destination
+    ):
+        """
+        Send every navigation request through CommandRouter.
+        """
+
+        try:
+
+            return self.command_router.execute(
+                "NAVIGATE",
+                destination
+            )
+
+        except Exception as error:
+
+            self.response_panel.set_response(
+                f"NAVIGATION ERROR // {error}"
+            )
+
+            return False
+
+
+    # =====================================================
+    # PUBLIC NAVIGATION HELPERS
+    # =====================================================
+
+    # These small wrappers are intentionally kept so existing
+    # sidebar, voice, gesture, and AI code does not have to
+    # change. Every wrapper now uses the same command pipeline.
 
     def open_home(self):
 
-        self.switch_page(
-            self.home_page,
-            "HOME",
-            "HOME // LIVE SYSTEM TELEMETRY",
-            self.sidebar.home_button
+        return self.navigate_to(
+            "HOME"
         )
 
 
     def open_chat(self):
 
-        self.switch_page(
-            self.chat_page,
-            "CHAT",
-            "CHAT // COMMUNICATION CHANNEL READY",
-            self.sidebar.chat_button
+        return self.navigate_to(
+            "CHAT"
         )
 
 
     def open_create(self):
 
-        self.switch_page(
-            self.create_page_widget,
-            "CREATE",
-            "CREATE // CREATIVE SYSTEMS READY",
-            self.sidebar.create_button
+        return self.navigate_to(
+            "CREATE"
         )
 
 
     def open_search(self):
 
-        self.switch_page(
-            self.search_page,
-            "SEARCH",
-            "SEARCH // LIVE INFORMATION NETWORK READY",
-            self.sidebar.search_button
+        return self.navigate_to(
+            "SEARCH"
         )
 
 
     def open_code(self):
 
-        self.switch_page(
-            self.code_page,
-            "CODE",
-            "CODE // DEVELOPMENT ENVIRONMENT READY",
-            self.sidebar.code_button
+        return self.navigate_to(
+            "CODE"
         )
 
 
     def open_apps(self):
 
-        self.switch_page(
-            self.apps_page,
-            "APPS",
-            "APPS // APPLICATION CONTROL READY",
-            self.sidebar.apps_button
+        return self.navigate_to(
+            "APPS"
         )
 
 
     def open_settings(self):
 
-        self.switch_page(
-            self.settings_page,
-            "SETTINGS",
-            "SETTINGS // CONFIGURATION READY",
-            self.sidebar.settings_button
+        return self.navigate_to(
+            "SETTINGS"
         )
 
-
-    # =====================================================
-    # NEW SYSTEM MATRIX
-    # =====================================================
 
     def open_system_matrix(self):
 
-        self.current_mode = (
+        return self.navigate_to(
             "SYSTEM_MATRIX"
-        )
-
-
-        self.page_stack.setCurrentWidget(
-            self.system_matrix_page
-        )
-
-
-        self.animate_page(
-            self.system_matrix_page
-        )
-
-
-        self.response_panel.set_response(
-            "SYSTEM MATRIX // HARDWARE DIAGNOSTICS ONLINE"
-        )
-
-
-        self.reactor.trigger_glitch(
-            0.9,
-            16
-        )
-
-
-        self.play_ui_sound(
-            "HOME"
-        )
-
-
-        # HOME remains highlighted because MATRIX
-        # is considered an extension of HOME.
-        self.set_active_sidebar_button(
-            self.sidebar.home_button
         )
 
 
