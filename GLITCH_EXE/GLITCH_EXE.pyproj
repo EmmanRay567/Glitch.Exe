@@ -28,6 +28,8 @@
     <Compile Include="commands\navigation_commands.py" />
     <Compile Include="commands\__init__.py" />
     <Compile Include="config.py" />
+    <Compile Include="controllers\gesture_controller.py" />
+    <Compile Include="controllers\voice_controller.py" />
     <Compile Include="controllers\navigation_controller.py" />
     <Compile Include="controllers\__init__.py" />
     <Compile Include="core\memory.py" />

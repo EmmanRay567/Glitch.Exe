@@ -52,6 +52,7 @@ from core.event_bus import EventBus
 from core.command_router import CommandRouter
 from commands.navigation_commands import NavigationCommand
 from controllers.navigation_controller import NavigationController
+from controllers.gesture_controller import GestureController
 from services.application_service import ApplicationService
 from services.system_monitoring_service import SystemMonitoringService
 
@@ -417,6 +418,22 @@ class GlitchWindow(QMainWindow):
                     self.navigation_controller,
                     destination
                 )
+        )
+
+
+        # =================================================
+        # GESTURE CONTROLLER
+        # =================================================
+
+        # HandTracker only detects physical movement.
+        # GestureController decides what that movement means
+        # inside GLITCH and sends the action through the same
+        # CommandRouter used by the rest of the application.
+        self.gesture_controller = (
+            GestureController(
+                self.command_router,
+                self.event_bus
+            )
         )
 
 
@@ -4231,18 +4248,36 @@ class GlitchWindow(QMainWindow):
 
     def handle_swipe_left(self):
 
-        # Only HOME -> MATRIX
-        if self.current_mode == "HOME":
+        success = (
+            self.gesture_controller
+            .swipe_left(
+                self.current_mode
+            )
+        )
 
-            self.open_system_matrix()
+
+        if success:
+
+            self.response_panel.set_response(
+                "GESTURE // SWIPE LEFT DETECTED"
+            )
 
 
     def handle_swipe_right(self):
 
-        # Only MATRIX -> HOME
-        if self.current_mode == "SYSTEM_MATRIX":
+        success = (
+            self.gesture_controller
+            .swipe_right(
+                self.current_mode
+            )
+        )
 
-            self.open_home()
+
+        if success:
+
+            self.response_panel.set_response(
+                "GESTURE // SWIPE RIGHT DETECTED"
+            )
 
 
     # =====================================================
