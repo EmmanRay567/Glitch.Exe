@@ -1,11 +1,7 @@
 import os
 import json
 import time
-import socket
-
 from pathlib import Path
-
-import psutil
 
 
 from PySide6.QtWidgets import (
@@ -57,6 +53,7 @@ from core.command_router import CommandRouter
 from commands.navigation_commands import NavigationCommand
 from controllers.navigation_controller import NavigationController
 from services.application_service import ApplicationService
+from services.system_monitoring_service import SystemMonitoringService
 
 from voice.voice_engine import VoiceEngine
 from voice.voice_listener import VoiceListener
@@ -370,6 +367,18 @@ class GlitchWindow(QMainWindow):
 
         self.application_service = (
             ApplicationService()
+        )
+
+
+        # =================================================
+        # SYSTEM MONITORING SERVICE
+        # =================================================
+
+        # SystemMonitoringService owns CPU, RAM, battery,
+        # network, and hostname collection. The UI only
+        # displays the snapshot it receives.
+        self.system_monitoring_service = (
+            SystemMonitoringService()
         )
 
 
@@ -2357,6 +2366,7 @@ class GlitchWindow(QMainWindow):
 
     def update_system_stats(self):
 
+        # The UI still owns presentation-specific time formatting.
         self.time_value.setText(
             time.strftime(
                 "%I:%M:%S %p"
@@ -2364,110 +2374,73 @@ class GlitchWindow(QMainWindow):
         )
 
 
-        cpu = (
-            psutil.cpu_percent()
-        )
-
-
-        self.cpu_value.setText(
-            f"{cpu:.0f}%"
-        )
-
-
-        ram = (
-            psutil
-            .virtual_memory()
-            .percent
-        )
-
-
-        self.ram_value.setText(
-            f"{ram:.0f}%"
-        )
-
-
-        battery = (
-            psutil
-            .sensors_battery()
-        )
-
-
-        if battery:
-
-            battery_text = (
-                f"{battery.percent:.0f}%"
-            )
-
-
-            if battery.power_plugged:
-
-                battery_text += (
-                    " // CHARGING"
-                )
-
-
-        else:
-
-            battery_text = (
-                "DESKTOP / N/A"
-            )
-
-
-        self.battery_value.setText(
-            battery_text
-        )
-
-
-        connected = False
-
-
         try:
 
-            interfaces = (
-                psutil.net_if_stats()
+            # Ask the service for one complete telemetry snapshot.
+            # main_window no longer talks directly to psutil/socket.
+            stats = (
+                self.system_monitoring_service
+                .get_snapshot()
             )
 
 
-            for (
-                name,
-                stats
-            ) in interfaces.items():
-
-                lower_name = (
-                    name.lower()
-                )
+            cpu = (
+                stats[
+                    "cpu_percent"
+                ]
+            )
 
 
-                if (
-                    stats.isup
-
-                    and "loopback"
-                    not in lower_name
-
-                    and "pseudo"
-                    not in lower_name
-                ):
-
-                    connected = True
-
-                    break
+            self.cpu_value.setText(
+                f"{cpu:.0f}%"
+            )
 
 
-        except Exception:
-
-            pass
-
-
-        self.network_value.setText(
-            "ONLINE"
-            if connected
-            else "OFFLINE"
-        )
+            ram = (
+                stats[
+                    "memory_percent"
+                ]
+            )
 
 
-        self.host_value.setText(
-            socket.gethostname()
-        )
+            self.ram_value.setText(
+                f"{ram:.0f}%"
+            )
+
+
+            battery = (
+                stats[
+                    "battery"
+                ]
+            )
+
+
+            self.battery_value.setText(
+                battery[
+                    "display"
+                ]
+            )
+
+
+            self.network_value.setText(
+                stats[
+                    "network"
+                ]
+            )
+
+
+            self.host_value.setText(
+                stats[
+                    "hostname"
+                ]
+            )
+
+
+        except Exception as error:
+
+            self.response_panel.set_response(
+                f"SYSTEM MONITOR ERROR // {error}"
+            )
 
 
     # =====================================================
