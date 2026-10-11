@@ -54,6 +54,7 @@ from core.service_container import ServiceContainer
 from commands.navigation_commands import NavigationCommand
 from controllers.navigation_controller import NavigationController
 from controllers.gesture_controller import GestureController
+from controllers.interaction_controller import InteractionController
 from services.application_service import ApplicationService
 from services.system_monitoring_service import SystemMonitoringService
 
@@ -460,16 +461,31 @@ class GlitchWindow(QMainWindow):
 
 
         # =================================================
+        # INTERACTION CONTROLLER
+        # =================================================
+
+        # Phase 1 unified interaction layer.
+        # Voice, gestures, mouse, keyboard, and future agents
+        # can all express actions as InteractionIntent objects.
+        self.interaction_controller = (
+            InteractionController(
+                self.command_router,
+                self.event_bus
+            )
+        )
+
+
+        # =================================================
         # GESTURE CONTROLLER
         # =================================================
 
-        # HandTracker only detects physical movement.
-        # GestureController decides what that movement means
-        # inside GLITCH and sends the action through the same
-        # CommandRouter used by the rest of the application.
+        # HandTracker detects the physical gesture.
+        # GestureController converts that gesture into an
+        # InteractionIntent and sends it through the unified
+        # InteractionController.
         self.gesture_controller = (
             GestureController(
-                self.command_router,
+                self.interaction_controller,
                 self.event_bus
             )
         )

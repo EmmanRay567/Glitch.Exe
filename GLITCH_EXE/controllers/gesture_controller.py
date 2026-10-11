@@ -1,21 +1,28 @@
 from models.events import GestureEvent
+from models.intent import InteractionIntent
 
 
 class GestureController:
     """
-    Converts recognized gestures into GLITCH actions.
+    Converts recognized gestures into GLITCH intents.
 
     HandTracker detects physical movement.
-    GestureController decides what that movement means.
+    GestureController decides what the movement means.
+    InteractionController decides how GLITCH executes it.
     """
 
     def __init__(
         self,
-        command_router,
+        interaction_controller,
         event_bus=None
     ):
-        self.command_router = command_router
-        self.event_bus = event_bus
+        self.interaction_controller = (
+            interaction_controller
+        )
+
+        self.event_bus = (
+            event_bus
+        )
 
 
     # ---------------------------------------------------------
@@ -80,11 +87,27 @@ class GestureController:
 
         if current_mode == "HOME":
 
+            intent = InteractionIntent(
+
+                action="NAVIGATE",
+
+                target="SYSTEM_MATRIX",
+
+                source="GESTURE",
+
+                confidence=1.0,
+
+                data={
+                    "gesture": "SWIPE_LEFT",
+                    "current_mode": current_mode,
+                }
+            )
+
+
             handled = (
-                self.command_router
-                .execute(
-                    "NAVIGATE",
-                    "SYSTEM_MATRIX"
+                self.interaction_controller
+                .handle_intent(
+                    intent
                 )
             )
 
@@ -120,11 +143,27 @@ class GestureController:
 
         if current_mode == "SYSTEM_MATRIX":
 
+            intent = InteractionIntent(
+
+                action="NAVIGATE",
+
+                target="HOME",
+
+                source="GESTURE",
+
+                confidence=1.0,
+
+                data={
+                    "gesture": "SWIPE_RIGHT",
+                    "current_mode": current_mode,
+                }
+            )
+
+
             handled = (
-                self.command_router
-                .execute(
-                    "NAVIGATE",
-                    "HOME"
+                self.interaction_controller
+                .handle_intent(
+                    intent
                 )
             )
 
