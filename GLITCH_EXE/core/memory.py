@@ -1,122 +1,166 @@
-import sqlite3
 from pathlib import Path
+
+from repositories.memory_repository import (
+    MemoryRepository
+)
 
 
 class MemoryManager:
+    """
+    Handles GLITCH memory rules.
+
+    MemoryManager decides:
+    - what should be remembered
+    - whether a memory is valid
+    - how search terms are interpreted
+
+    MemoryRepository handles:
+    - SQLite
+    - queries
+    - inserts
+    - database persistence
+    """
+
     def __init__(self):
-        data_folder = Path("data")
-        data_folder.mkdir(exist_ok=True)
 
-        self.db_path = data_folder / "glitch_memory.db"
-
-        self.connection = sqlite3.connect(
-            self.db_path,
-            check_same_thread=False
+        data_folder = Path(
+            "data"
         )
 
-        self.create_tables()
+        data_folder.mkdir(
+            exist_ok=True
+        )
 
-    def create_tables(self):
-        cursor = self.connection.cursor()
+        self.db_path = (
+            data_folder
+            / "glitch_memory.db"
+        )
 
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS memories (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                category TEXT NOT NULL,
-                content TEXT NOT NULL,
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+
+        self.repository = (
+            MemoryRepository(
+                self.db_path
             )
-        """)
+        )
 
-        self.connection.commit()
 
-    def remember(self, content, category="general"):
-        content = content.strip()
+    # ---------------------------------------------------------
+    # REMEMBER
+    # ---------------------------------------------------------
+
+    def remember(
+        self,
+        content,
+        category="general"
+    ):
+
+        content = (
+            content.strip()
+        )
+
 
         if not content:
+
             return False
 
-        cursor = self.connection.cursor()
 
-        # Avoid exact duplicates
-        cursor.execute(
-            """
-            SELECT id
-            FROM memories
-            WHERE content = ?
-            """,
-            (content,)
-        )
+        # Avoid exact duplicates.
+        if self.repository.memory_exists(
+            content
+        ):
 
-        if cursor.fetchone():
             return False
 
-        cursor.execute(
-            """
-            INSERT INTO memories (
-                category,
-                content
-            )
-            VALUES (?, ?)
-            """,
-            (
-                category,
-                content
-            )
+
+        self.repository.add_memory(
+            category,
+            content
         )
 
-        self.connection.commit()
 
         return True
 
+
+    # ---------------------------------------------------------
+    # GET ALL MEMORIES
+    # ---------------------------------------------------------
+
     def get_all_memories(self):
-        cursor = self.connection.cursor()
 
-        cursor.execute("""
-            SELECT category, content
-            FROM memories
-            ORDER BY id DESC
-        """)
+        return (
+            self.repository
+            .get_all_memories()
+        )
 
-        return cursor.fetchall()
 
-    def search_memories(self, query):
-        cursor = self.connection.cursor()
+    # ---------------------------------------------------------
+    # SEARCH MEMORY
+    # ---------------------------------------------------------
+
+    def search_memories(
+        self,
+        query
+    ):
 
         words = [
+
             word.strip()
+
             for word in query.split()
-            if len(word.strip()) > 2
+
+            if len(
+                word.strip()
+            ) > 2
         ]
 
+
         if not words:
+
             return []
+
 
         results = []
 
+
         for word in words:
-            cursor.execute(
-                """
-                SELECT category, content
-                FROM memories
-                WHERE content LIKE ?
-                ORDER BY id DESC
-                LIMIT 10
-                """,
-                (f"%{word}%",)
+
+            rows = (
+                self.repository
+                .search_by_word(
+                    word,
+                    limit=10
+                )
             )
 
-            for row in cursor.fetchall():
+
+            for row in rows:
+
                 if row not in results:
-                    results.append(row)
+
+                    results.append(
+                        row
+                    )
+
 
         return results[:10]
 
-    def count_memories(self):
-        cursor = self.connection.cursor()
 
-        cursor.execute(
-            "SELECT COUNT(*) FROM memories"
+    # ---------------------------------------------------------
+    # COUNT
+    # ---------------------------------------------------------
+
+    def count_memories(self):
+
+        return (
+            self.repository
+            .count_memories()
         )
 
-        return cursor.fetchone()[0]
+
+    # ---------------------------------------------------------
+    # CLEAN SHUTDOWN
+    # ---------------------------------------------------------
+
+    def close(self):
+
+        self.repository.close()
