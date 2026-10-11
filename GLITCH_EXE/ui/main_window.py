@@ -364,6 +364,18 @@ class GlitchWindow(QMainWindow):
 
 
         # =================================================
+        # EVENT BUS
+        # =================================================
+
+        # One shared EventBus is created first so every
+        # service and controller can publish to the same
+        # internal GLITCH event network.
+        self.event_bus = (
+            EventBus()
+        )
+
+
+        # =================================================
         # SERVICE CONTAINER
         # =================================================
 
@@ -380,7 +392,9 @@ class GlitchWindow(QMainWindow):
 
         self.services.register(
             "application",
-            ApplicationService()
+            ApplicationService(
+                self.event_bus
+            )
         )
 
 
@@ -400,7 +414,9 @@ class GlitchWindow(QMainWindow):
         # displays the snapshot it receives.
         self.services.register(
             "system_monitoring",
-            SystemMonitoringService()
+            SystemMonitoringService(
+                self.event_bus
+            )
         )
 
 
@@ -414,12 +430,6 @@ class GlitchWindow(QMainWindow):
         # =================================================
         # NAVIGATION ARCHITECTURE
         # =================================================
-
-        # EventBus lets navigation announce page changes
-        # without directly coupling future listeners to the UI.
-        self.event_bus = (
-            EventBus()
-        )
 
 
         # NavigationController owns the navigation decision.

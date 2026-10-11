@@ -5,6 +5,7 @@ import subprocess
 import psutil
 
 from services.base_service import BaseService
+from models.events import ApplicationEvent
 
 
 class ApplicationService(BaseService):
@@ -17,6 +18,42 @@ class ApplicationService(BaseService):
 
     def __init__(self, event_bus=None):
         super().__init__(event_bus)
+
+    # =========================================================
+    # EVENT PUBLISHING
+    # =========================================================
+
+    def publish_application_event(
+        self,
+        event_name,
+        app_key,
+        action,
+        success,
+        message
+    ):
+        """
+        Broadcast an application lifecycle event.
+
+        BaseService.publish() safely does nothing when no
+        EventBus has been supplied, so this remains compatible
+        with existing startup code during the refactor.
+        """
+
+        self.publish(
+            ApplicationEvent(
+                name=event_name,
+                source="ApplicationService",
+                app_key=app_key,
+                action=action,
+                success=success,
+                data={
+                    "app_key": app_key,
+                    "action": action,
+                    "success": success,
+                    "message": message,
+                }
+            )
+        )
 
     # =========================================================
     # PATH HELPERS
@@ -57,19 +94,37 @@ class ApplicationService(BaseService):
             "seratodj": "serato dj",
         }
 
-        normalized_name = aliases.get(app_name, app_name)
+        normalized_name = aliases.get(
+            app_name,
+            app_name
+        )
 
         try:
-            if normalized_name in ("explorer", "file explorer"):
-                subprocess.Popen(["explorer.exe"])
+            if normalized_name in (
+                "explorer",
+                "file explorer"
+            ):
+                subprocess.Popen(
+                    ["explorer.exe"]
+                )
 
             elif normalized_name == "notepad":
-                subprocess.Popen(["notepad.exe"])
+                subprocess.Popen(
+                    ["notepad.exe"]
+                )
 
-            elif normalized_name in ("calculator", "calc"):
-                subprocess.Popen(["calc.exe"])
+            elif normalized_name in (
+                "calculator",
+                "calc"
+            ):
+                subprocess.Popen(
+                    ["calc.exe"]
+                )
 
-            elif normalized_name in ("chrome", "google chrome"):
+            elif normalized_name in (
+                "chrome",
+                "google chrome"
+            ):
                 chrome_path = self.find_existing_path(
                     [
                         r"%ProgramFiles%\Google\Chrome\Application\chrome.exe",
@@ -79,9 +134,24 @@ class ApplicationService(BaseService):
                 )
 
                 if chrome_path is None:
-                    return False, "Chrome was not found."
+                    message = "Chrome was not found."
 
-                subprocess.Popen([chrome_path])
+                    self.publish_application_event(
+                        "APPLICATION_LAUNCH_FAILED",
+                        normalized_name,
+                        "launch",
+                        False,
+                        message
+                    )
+
+                    return (
+                        False,
+                        message
+                    )
+
+                subprocess.Popen(
+                    [chrome_path]
+                )
 
             elif normalized_name == "spotify":
                 spotify_path = self.find_existing_path(
@@ -92,9 +162,24 @@ class ApplicationService(BaseService):
                 )
 
                 if spotify_path is None:
-                    return False, "Spotify was not found."
+                    message = "Spotify was not found."
 
-                subprocess.Popen([spotify_path])
+                    self.publish_application_event(
+                        "APPLICATION_LAUNCH_FAILED",
+                        normalized_name,
+                        "launch",
+                        False,
+                        message
+                    )
+
+                    return (
+                        False,
+                        message
+                    )
+
+                subprocess.Popen(
+                    [spotify_path]
+                )
 
             elif normalized_name == "android studio":
                 android_path = self.find_existing_path(
@@ -106,63 +191,193 @@ class ApplicationService(BaseService):
                 )
 
                 if android_path is None:
-                    return False, "Android Studio was not found."
+                    message = (
+                        "Android Studio was not found."
+                    )
 
-                subprocess.Popen([android_path])
+                    self.publish_application_event(
+                        "APPLICATION_LAUNCH_FAILED",
+                        normalized_name,
+                        "launch",
+                        False,
+                        message
+                    )
+
+                    return (
+                        False,
+                        message
+                    )
+
+                subprocess.Popen(
+                    [android_path]
+                )
 
             elif normalized_name in (
                 "visual studio",
                 "visual studio 2022",
                 "vs",
             ):
-                visual_studio_path = self.find_existing_path(
-                    [
-                        r"%ProgramFiles%\Microsoft Visual Studio\2022\Community\Common7\IDE\devenv.exe",
-                        r"%ProgramFiles%\Microsoft Visual Studio\2022\Professional\Common7\IDE\devenv.exe",
-                        r"%ProgramFiles%\Microsoft Visual Studio\2022\Enterprise\Common7\IDE\devenv.exe",
-                    ]
+                visual_studio_path = (
+                    self.find_existing_path(
+                        [
+                            r"%ProgramFiles%\Microsoft Visual Studio\2022\Community\Common7\IDE\devenv.exe",
+                            r"%ProgramFiles%\Microsoft Visual Studio\2022\Professional\Common7\IDE\devenv.exe",
+                            r"%ProgramFiles%\Microsoft Visual Studio\2022\Enterprise\Common7\IDE\devenv.exe",
+                        ]
+                    )
                 )
 
                 if visual_studio_path is None:
-                    return False, "Visual Studio was not found."
+                    message = (
+                        "Visual Studio was not found."
+                    )
 
-                subprocess.Popen([visual_studio_path])
+                    self.publish_application_event(
+                        "APPLICATION_LAUNCH_FAILED",
+                        normalized_name,
+                        "launch",
+                        False,
+                        message
+                    )
 
-            elif normalized_name in ("serato studio", "serato"):
-                serato_studio_path = self.find_existing_path(
-                    [
-                        r"%ProgramFiles%\Serato\Serato Studio\Serato Studio.exe",
-                        r"%LOCALAPPDATA%\Serato\Serato Studio\Serato Studio.exe",
-                        r"%ProgramFiles(x86)%\Serato\Serato Studio\Serato Studio.exe",
-                    ]
+                    return (
+                        False,
+                        message
+                    )
+
+                subprocess.Popen(
+                    [visual_studio_path]
+                )
+
+            elif normalized_name in (
+                "serato studio",
+                "serato"
+            ):
+                serato_studio_path = (
+                    self.find_existing_path(
+                        [
+                            r"%ProgramFiles%\Serato\Serato Studio\Serato Studio.exe",
+                            r"%LOCALAPPDATA%\Serato\Serato Studio\Serato Studio.exe",
+                            r"%ProgramFiles(x86)%\Serato\Serato Studio\Serato Studio.exe",
+                        ]
+                    )
                 )
 
                 if serato_studio_path is None:
-                    return False, "Serato Studio was not found."
+                    message = (
+                        "Serato Studio was not found."
+                    )
 
-                subprocess.Popen([serato_studio_path])
+                    self.publish_application_event(
+                        "APPLICATION_LAUNCH_FAILED",
+                        normalized_name,
+                        "launch",
+                        False,
+                        message
+                    )
 
-            elif normalized_name in ("serato dj", "serato dj pro"):
-                serato_dj_path = self.find_existing_path(
-                    [
-                        r"%ProgramFiles%\Serato\Serato DJ Pro\Serato DJ Pro.exe",
-                        r"%ProgramFiles(x86)%\Serato\Serato DJ Pro\Serato DJ Pro.exe",
-                        r"%LOCALAPPDATA%\Serato\Serato DJ Pro\Serato DJ Pro.exe",
-                    ]
+                    return (
+                        False,
+                        message
+                    )
+
+                subprocess.Popen(
+                    [serato_studio_path]
+                )
+
+            elif normalized_name in (
+                "serato dj",
+                "serato dj pro"
+            ):
+                serato_dj_path = (
+                    self.find_existing_path(
+                        [
+                            r"%ProgramFiles%\Serato\Serato DJ Pro\Serato DJ Pro.exe",
+                            r"%ProgramFiles(x86)%\Serato\Serato DJ Pro\Serato DJ Pro.exe",
+                            r"%LOCALAPPDATA%\Serato\Serato DJ Pro\Serato DJ Pro.exe",
+                        ]
+                    )
                 )
 
                 if serato_dj_path is None:
-                    return False, "Serato DJ Pro was not found."
+                    message = (
+                        "Serato DJ Pro was not found."
+                    )
 
-                subprocess.Popen([serato_dj_path])
+                    self.publish_application_event(
+                        "APPLICATION_LAUNCH_FAILED",
+                        normalized_name,
+                        "launch",
+                        False,
+                        message
+                    )
+
+                    return (
+                        False,
+                        message
+                    )
+
+                subprocess.Popen(
+                    [serato_dj_path]
+                )
 
             else:
-                return False, f"Application not supported: {app_name}"
+                message = (
+                    f"Application not supported: "
+                    f"{app_name}"
+                )
 
-            return True, f"{self._display_name(normalized_name)} launched."
+                self.publish_application_event(
+                    "APPLICATION_LAUNCH_FAILED",
+                    normalized_name,
+                    "launch",
+                    False,
+                    message
+                )
+
+                return (
+                    False,
+                    message
+                )
+
+            message = (
+                f"{self._display_name(normalized_name)} "
+                f"launched."
+            )
+
+            self.publish_application_event(
+                "APPLICATION_LAUNCHED",
+                normalized_name,
+                "launch",
+                True,
+                message
+            )
+
+            return (
+                True,
+                message
+            )
 
         except Exception as error:
-            return False, f"Unable to launch {self._display_name(normalized_name)}: {error}"
+            message = (
+                f"Unable to launch "
+                f"{self._display_name(normalized_name)}: "
+                f"{error}"
+            )
+
+            self.publish_application_event(
+                "APPLICATION_LAUNCH_FAILED",
+                normalized_name,
+                "launch",
+                False,
+                message
+            )
+
+            return (
+                False,
+                message
+            )
+
 
     # =========================================================
     # APP CLOSING
@@ -176,7 +391,11 @@ class ApplicationService(BaseService):
         the process immediately. That is safer for apps with unsaved work.
         """
 
-        app_name = app_name.strip().lower()
+        app_name = (
+            app_name
+            .strip()
+            .lower()
+        )
 
         aliases = {
             "visualstudio": "visual studio",
@@ -185,15 +404,24 @@ class ApplicationService(BaseService):
             "seratodj": "serato dj",
         }
 
-        normalized_name = aliases.get(app_name, app_name)
+        normalized_name = aliases.get(
+            app_name,
+            app_name
+        )
 
         process_names = {
             "chrome": ["chrome.exe"],
             "google chrome": ["chrome.exe"],
             "spotify": ["Spotify.exe"],
             "notepad": ["notepad.exe"],
-            "calculator": ["CalculatorApp.exe", "Calculator.exe"],
-            "android studio": ["studio64.exe", "studio.exe"],
+            "calculator": [
+                "CalculatorApp.exe",
+                "Calculator.exe"
+            ],
+            "android studio": [
+                "studio64.exe",
+                "studio.exe"
+            ],
             "visual studio": ["devenv.exe"],
             "visual studio 2022": ["devenv.exe"],
             "vs": ["devenv.exe"],
@@ -203,32 +431,113 @@ class ApplicationService(BaseService):
             "serato dj pro": ["Serato DJ Pro.exe"],
         }
 
-        targets = process_names.get(normalized_name)
+        targets = process_names.get(
+            normalized_name
+        )
 
         if targets is None:
-            return False, f"Application not supported: {app_name}"
+            message = (
+                f"Application not supported: "
+                f"{app_name}"
+            )
+
+            self.publish_application_event(
+                "APPLICATION_CLOSE_FAILED",
+                normalized_name,
+                "close",
+                False,
+                message
+            )
+
+            return (
+                False,
+                message
+            )
 
         found = False
 
         try:
-            for process in psutil.process_iter(["pid", "name"]):
-                process_name = process.info.get("name")
+            for process in psutil.process_iter(
+                [
+                    "pid",
+                    "name"
+                ]
+            ):
+                process_name = (
+                    process.info.get(
+                        "name"
+                    )
+                )
 
                 if process_name in targets:
                     found = True
 
                     try:
                         process.terminate()
-                    except (psutil.NoSuchProcess, psutil.AccessDenied):
+
+                    except (
+                        psutil.NoSuchProcess,
+                        psutil.AccessDenied
+                    ):
                         pass
 
             if found:
-                return True, f"{self._display_name(normalized_name)} close requested."
+                message = (
+                    f"{self._display_name(normalized_name)} "
+                    f"close requested."
+                )
 
-            return False, f"{self._display_name(normalized_name)} is not running."
+                self.publish_application_event(
+                    "APPLICATION_CLOSED",
+                    normalized_name,
+                    "close",
+                    True,
+                    message
+                )
+
+                return (
+                    True,
+                    message
+                )
+
+            message = (
+                f"{self._display_name(normalized_name)} "
+                f"is not running."
+            )
+
+            self.publish_application_event(
+                "APPLICATION_CLOSE_FAILED",
+                normalized_name,
+                "close",
+                False,
+                message
+            )
+
+            return (
+                False,
+                message
+            )
 
         except Exception as error:
-            return False, f"Unable to close {self._display_name(normalized_name)}: {error}"
+            message = (
+                f"Unable to close "
+                f"{self._display_name(normalized_name)}: "
+                f"{error}"
+            )
+
+            self.publish_application_event(
+                "APPLICATION_CLOSE_FAILED",
+                normalized_name,
+                "close",
+                False,
+                message
+            )
+
+            return (
+                False,
+                message
+            )
+
 
     # =========================================================
     # MEDIA CONTROLS

@@ -1,3 +1,6 @@
+from models.events import VoiceEvent
+
+
 class VoiceController:
     """
     Interprets recognized voice commands and routes
@@ -18,14 +21,68 @@ class VoiceController:
         self.application_service = application_service
         self.event_bus = event_bus
 
+
+    # ---------------------------------------------------------
+    # EVENT PUBLISHING
+    # ---------------------------------------------------------
+
+    def publish_voice_event(
+        self,
+        command,
+        handled,
+        action_type=None
+    ):
+
+        if self.event_bus is None:
+
+            return
+
+
+        event = VoiceEvent(
+
+            name="VOICE_COMMAND_HANDLED",
+
+            source="VoiceController",
+
+            transcript=command,
+
+            command=command,
+
+            handled=handled,
+
+            action_type=action_type,
+
+            data={
+                "command": command,
+                "handled": handled,
+                "action_type": action_type,
+            }
+        )
+
+
+        self.event_bus.publish(
+            event
+        )
+
+
     # ---------------------------------------------------------
     # NAVIGATION
     # ---------------------------------------------------------
 
-    def handle_navigation(self, command):
-        command = command.strip().lower()
+    def handle_navigation(
+        self,
+        command
+    ):
+
+        command = (
+            command
+            .strip()
+            .lower()
+        )
+
 
         navigation_commands = {
+
             "home": "HOME",
             "go home": "HOME",
             "open home": "HOME",
@@ -57,89 +114,215 @@ class VoiceController:
             "show system stats": "SYSTEM_MATRIX",
         }
 
-        destination = navigation_commands.get(
-            command
+
+        destination = (
+            navigation_commands
+            .get(
+                command
+            )
         )
+
 
         if destination is None:
+
             return False
 
-        return self.command_router.execute(
-            "NAVIGATE",
-            destination
+
+        return (
+            self.command_router
+            .execute(
+                "NAVIGATE",
+                destination
+            )
         )
+
 
     # ---------------------------------------------------------
     # MEDIA
     # ---------------------------------------------------------
 
-    def handle_media(self, command):
-        command = command.strip().lower()
+    def handle_media(
+        self,
+        command
+    ):
+
+        command = (
+            command
+            .strip()
+            .lower()
+        )
+
 
         if command in [
+
             "play music",
             "pause music",
             "play",
             "pause",
             "resume music",
+
         ]:
+
             self.application_service.media_play_pause()
-            return True, "Media control activated."
+
+            return (
+                True,
+                "Media control activated."
+            )
+
 
         if command in [
+
             "next track",
             "next song",
             "skip song",
+
         ]:
+
             self.application_service.media_next()
-            return True, "Next track."
+
+            return (
+                True,
+                "Next track."
+            )
+
 
         if command in [
+
             "previous track",
             "previous song",
             "go back a song",
+
         ]:
+
             self.application_service.media_previous()
-            return True, "Previous track."
+
+            return (
+                True,
+                "Previous track."
+            )
+
 
         if command in [
+
             "stop music",
             "stop playback",
-        ]:
-            self.application_service.media_stop()
-            return True, "Playback stopped."
 
-        return False, None
+        ]:
+
+            self.application_service.media_stop()
+
+            return (
+                True,
+                "Playback stopped."
+            )
+
+
+        return (
+            False,
+            None
+        )
+
 
     # ---------------------------------------------------------
     # OPEN APPLICATION
     # ---------------------------------------------------------
 
-    def handle_open_app(self, command):
-        command = command.strip().lower()
+    def handle_open_app(
+        self,
+        command
+    ):
 
-        if not command.startswith("open "):
-            return False, None
-
-        target = command[
-            len("open "):
-        ].strip(
-            " ,.!?:;-"
+        command = (
+            command
+            .strip()
+            .lower()
         )
 
+
+        if not command.startswith(
+            "open "
+        ):
+
+            return (
+                False,
+                None
+            )
+
+
+        target = (
+            command[
+                len("open "):
+            ]
+            .strip(
+                " ,.!?:;-"
+            )
+        )
+
+
         app_map = [
-            ("serato studio", "seratostudio", "Opening Serato Studio."),
-            ("serato dj", "seratodj", "Opening Serato DJ."),
-            ("visual studio", "visualstudio", "Opening Visual Studio."),
-            ("android studio", "androidstudio", "Opening Android Studio."),
-            ("file explorer", "explorer", "Opening File Explorer."),
-            ("chrome", "chrome", "Opening Chrome."),
-            ("spotify", "spotify", "Opening Spotify."),
-            ("notepad", "notepad", "Opening Notepad."),
-            ("calculator", "calculator", "Opening Calculator."),
+
+            (
+                "serato studio",
+                "seratostudio",
+                "Opening Serato Studio."
+            ),
+
+            (
+                "serato dj",
+                "seratodj",
+                "Opening Serato DJ."
+            ),
+
+            (
+                "visual studio",
+                "visualstudio",
+                "Opening Visual Studio."
+            ),
+
+            (
+                "android studio",
+                "androidstudio",
+                "Opening Android Studio."
+            ),
+
+            (
+                "file explorer",
+                "explorer",
+                "Opening File Explorer."
+            ),
+
+            (
+                "chrome",
+                "chrome",
+                "Opening Chrome."
+            ),
+
+            (
+                "spotify",
+                "spotify",
+                "Opening Spotify."
+            ),
+
+            (
+                "notepad",
+                "notepad",
+                "Opening Notepad."
+            ),
+
+            (
+                "calculator",
+                "calculator",
+                "Opening Calculator."
+            ),
         ]
 
-        for phrase, app_key, confirmation in app_map:
+
+        for (
+            phrase,
+            app_key,
+            confirmation
+        ) in app_map:
 
             if phrase in target:
 
@@ -150,39 +333,118 @@ class VoiceController:
                     )
                 )
 
+
                 if success:
-                    return True, confirmation
 
-                return True, message
+                    return (
+                        True,
+                        confirmation
+                    )
 
-        return False, None
+
+                return (
+                    True,
+                    message
+                )
+
+
+        return (
+            False,
+            None
+        )
+
 
     # ---------------------------------------------------------
     # CLOSE APPLICATION
     # ---------------------------------------------------------
 
-    def handle_close_app(self, command):
-        command = command.strip().lower()
+    def handle_close_app(
+        self,
+        command
+    ):
 
-        if not command.startswith("close "):
-            return False, None
+        command = (
+            command
+            .strip()
+            .lower()
+        )
 
-        target = command[
-            len("close "):
-        ].strip()
+
+        if not command.startswith(
+            "close "
+        ):
+
+            return (
+                False,
+                None
+            )
+
+
+        target = (
+            command[
+                len("close "):
+            ]
+            .strip()
+        )
+
 
         app_map = [
-            ("serato studio", "seratostudio", "Serato Studio"),
-            ("serato dj", "seratodj", "Serato DJ"),
-            ("visual studio", "visualstudio", "Visual Studio"),
-            ("android studio", "androidstudio", "Android Studio"),
-            ("spotify", "spotify", "Spotify"),
-            ("chrome", "chrome", "Chrome"),
-            ("notepad", "notepad", "Notepad"),
-            ("calculator", "calculator", "Calculator"),
+
+            (
+                "serato studio",
+                "seratostudio",
+                "Serato Studio"
+            ),
+
+            (
+                "serato dj",
+                "seratodj",
+                "Serato DJ"
+            ),
+
+            (
+                "visual studio",
+                "visualstudio",
+                "Visual Studio"
+            ),
+
+            (
+                "android studio",
+                "androidstudio",
+                "Android Studio"
+            ),
+
+            (
+                "spotify",
+                "spotify",
+                "Spotify"
+            ),
+
+            (
+                "chrome",
+                "chrome",
+                "Chrome"
+            ),
+
+            (
+                "notepad",
+                "notepad",
+                "Notepad"
+            ),
+
+            (
+                "calculator",
+                "calculator",
+                "Calculator"
+            ),
         ]
 
-        for phrase, app_key, display_name in app_map:
+
+        for (
+            phrase,
+            app_key,
+            display_name
+        ) in app_map:
 
             if phrase in target:
 
@@ -193,11 +455,14 @@ class VoiceController:
                     )
                 )
 
+
                 if success:
+
                     return (
                         True,
                         f"Closing {display_name}."
                     )
+
 
                 return (
                     True,
@@ -205,23 +470,54 @@ class VoiceController:
                     f"to be running."
                 )
 
-        return False, None
+
+        return (
+            False,
+            None
+        )
+
 
     # ---------------------------------------------------------
     # MAIN ROUTER
     # ---------------------------------------------------------
 
-    def handle_command(self, command):
-        command = command.strip().lower()
+    def handle_command(
+        self,
+        command
+    ):
+
+        command = (
+            command
+            .strip()
+            .lower()
+        )
+
+
+        # -----------------------------------------------------
+        # NAVIGATION
+        # -----------------------------------------------------
 
         if self.handle_navigation(
             command
         ):
+
+            self.publish_voice_event(
+                command,
+                True,
+                "navigation"
+            )
+
+
             return {
                 "handled": True,
                 "type": "navigation",
                 "message": None,
             }
+
+
+        # -----------------------------------------------------
+        # MEDIA
+        # -----------------------------------------------------
 
         handled, message = (
             self.handle_media(
@@ -229,12 +525,26 @@ class VoiceController:
             )
         )
 
+
         if handled:
+
+            self.publish_voice_event(
+                command,
+                True,
+                "media"
+            )
+
+
             return {
                 "handled": True,
                 "type": "media",
                 "message": message,
             }
+
+
+        # -----------------------------------------------------
+        # CLOSE APP
+        # -----------------------------------------------------
 
         handled, message = (
             self.handle_close_app(
@@ -242,12 +552,26 @@ class VoiceController:
             )
         )
 
+
         if handled:
+
+            self.publish_voice_event(
+                command,
+                True,
+                "close_app"
+            )
+
+
             return {
                 "handled": True,
                 "type": "close_app",
                 "message": message,
             }
+
+
+        # -----------------------------------------------------
+        # OPEN APP
+        # -----------------------------------------------------
 
         handled, message = (
             self.handle_open_app(
@@ -255,12 +579,33 @@ class VoiceController:
             )
         )
 
+
         if handled:
+
+            self.publish_voice_event(
+                command,
+                True,
+                "open_app"
+            )
+
+
             return {
                 "handled": True,
                 "type": "open_app",
                 "message": message,
             }
+
+
+        # -----------------------------------------------------
+        # NOT HANDLED
+        # -----------------------------------------------------
+
+        self.publish_voice_event(
+            command,
+            False,
+            None
+        )
+
 
         return {
             "handled": False,
