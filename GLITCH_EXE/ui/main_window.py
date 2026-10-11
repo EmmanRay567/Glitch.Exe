@@ -50,10 +50,10 @@ from PySide6.QtMultimedia import (
 from core.assistant import GlitchAssistant
 from core.event_bus import EventBus
 from core.command_router import CommandRouter
+from core.service_container import ServiceContainer
 from commands.navigation_commands import NavigationCommand
 from controllers.navigation_controller import NavigationController
 from controllers.gesture_controller import GestureController
-from controllers.voice_controller import VoiceController
 from services.application_service import ApplicationService
 from services.system_monitoring_service import SystemMonitoringService
 
@@ -364,11 +364,30 @@ class GlitchWindow(QMainWindow):
 
 
         # =================================================
+        # SERVICE CONTAINER
+        # =================================================
+
+        # ServiceContainer is GLITCH's central registry for
+        # reusable application/business services.
+        self.services = (
+            ServiceContainer()
+        )
+
+
+        # =================================================
         # APPLICATION SERVICE
         # =================================================
 
-        self.application_service = (
+        self.services.register(
+            "application",
             ApplicationService()
+        )
+
+
+        self.application_service = (
+            self.services.get(
+                "application"
+            )
         )
 
 
@@ -379,8 +398,16 @@ class GlitchWindow(QMainWindow):
         # SystemMonitoringService owns CPU, RAM, battery,
         # network, and hostname collection. The UI only
         # displays the snapshot it receives.
-        self.system_monitoring_service = (
+        self.services.register(
+            "system_monitoring",
             SystemMonitoringService()
+        )
+
+
+        self.system_monitoring_service = (
+            self.services.get(
+                "system_monitoring"
+            )
         )
 
 
@@ -433,22 +460,6 @@ class GlitchWindow(QMainWindow):
         self.gesture_controller = (
             GestureController(
                 self.command_router,
-                self.event_bus
-            )
-        )
-
-
-        # =================================================
-        # VOICE CONTROLLER
-        # =================================================
-
-        # VoiceListener converts microphone audio to text.
-        # VoiceController interprets deterministic commands
-        # such as navigation, media, and application control.
-        self.voice_controller = (
-            VoiceController(
-                self.command_router,
-                self.application_service,
                 self.event_bus
             )
         )
@@ -2566,8 +2577,6 @@ class GlitchWindow(QMainWindow):
         transcript
     ):
 
-        # Ignore transcripts while GLITCH is speaking so
-        # the assistant does not hear and command itself.
         if self.voice_output_active:
 
             return
@@ -2619,8 +2628,6 @@ class GlitchWindow(QMainWindow):
         # WAKE WORD
         # =================================================
 
-        # Wake-word gating remains in the UI/controller edge.
-        # VoiceController receives only the cleaned command.
         if not command.startswith(
             "glitch"
         ):
@@ -2657,11 +2664,32 @@ class GlitchWindow(QMainWindow):
 
 
         # =================================================
+        # SYSTEM MATRIX VOICE
+        # =================================================
+
+        if command in [
+
+            "open system matrix",
+            "system matrix",
+            "open diagnostics",
+            "show diagnostics",
+            "show system stats",
+
+        ]:
+
+            self.open_system_matrix()
+
+            self.say_confirmation(
+                "Opening system matrix."
+            )
+
+            return
+
+
+        # =================================================
         # LIVE SEARCH
         # =================================================
 
-        # Search still coordinates UI fields + AIWorker, so
-        # it remains here during this Phase 0 extraction.
         if command.startswith(
             "search for "
         ):
@@ -2702,7 +2730,6 @@ class GlitchWindow(QMainWindow):
         # OPEN PROJECT
         # =================================================
 
-        # Project discovery remains here for now.
         if (
             command.startswith(
                 "open my "
@@ -2746,109 +2773,421 @@ class GlitchWindow(QMainWindow):
 
 
         # =================================================
-        # VOICE CONTROLLER
+        # MEDIA
         # =================================================
 
-        # Deterministic commands now travel through:
-        # VoiceController -> CommandRouter / ApplicationService
-        result = (
-            self.voice_controller
-            .handle_command(
-                command
-            )
-        )
+        if command in [
 
+            "play music",
+            "pause music",
+            "play",
+            "pause",
+            "resume music",
 
-        if result[
-            "handled"
         ]:
 
-            action_type = (
-                result[
-                    "type"
-                ]
+            self.media_play_pause()
+
+
+            self.say_confirmation(
+                "Media control activated."
             )
 
 
-            message = (
-                result[
-                    "message"
-                ]
+            return
+
+
+        if command in [
+
+            "next track",
+            "next song",
+            "skip song",
+
+        ]:
+
+            self.media_next()
+
+
+            self.say_confirmation(
+                "Next track."
             )
 
 
-            # Keep the original app-launch visual feedback.
-            if action_type == "open_app":
-
-                self.play_ui_sound(
-                    "APPS"
-                )
+            return
 
 
-                self.reactor.trigger_glitch(
-                    0.5,
-                    8
-                )
+        if command in [
+
+            "previous track",
+            "previous song",
+            "go back a song",
+
+        ]:
+
+            self.media_previous()
 
 
-            # Preserve the two navigation voice confirmations
-            # that existed in the original working version.
-            if (
-                action_type == "navigation"
-                and message is None
-            ):
-
-                if command in [
-                    "open system matrix",
-                    "system matrix",
-                    "open diagnostics",
-                    "show diagnostics",
-                    "show system stats",
-                ]:
-
-                    message = (
-                        "Opening system matrix."
-                    )
-
-                elif command in [
-                    "home",
-                    "go home",
-                    "open home",
-                ]:
-
-                    message = (
-                        "Home interface."
-                    )
+            self.say_confirmation(
+                "Previous track."
+            )
 
 
-            if message:
+            return
 
-                self.say_confirmation(
-                    message
-                )
 
-            else:
+        if command in [
 
-                # Navigation commands such as "open chat"
-                # historically did not speak a confirmation.
-                QTimer.singleShot(
-                    500,
-                    lambda:
-                        self.set_voice_input_status(
-                            "LISTENING"
-                        )
-                )
+            "stop music",
+            "stop playback",
+
+        ]:
+
+            self.media_stop()
+
+
+            self.say_confirmation(
+                "Playback stopped."
+            )
 
 
             return
 
 
         # =================================================
+        # CLOSE APP
+        # =================================================
+
+        if command.startswith(
+            "close "
+        ):
+
+            target = (
+                command[
+                    len("close "):
+                ]
+                .strip()
+            )
+
+
+            if "serato studio" in target:
+
+                self.close_app_and_confirm(
+                    "seratostudio",
+                    "Serato Studio"
+                )
+
+                return
+
+
+            if "serato dj" in target:
+
+                self.close_app_and_confirm(
+                    "seratodj",
+                    "Serato DJ"
+                )
+
+                return
+
+
+            if "visual studio" in target:
+
+                self.close_app_and_confirm(
+                    "visualstudio",
+                    "Visual Studio"
+                )
+
+                return
+
+
+            if "android studio" in target:
+
+                self.close_app_and_confirm(
+                    "androidstudio",
+                    "Android Studio"
+                )
+
+                return
+
+
+            if "spotify" in target:
+
+                self.close_app_and_confirm(
+                    "spotify",
+                    "Spotify"
+                )
+
+                return
+
+
+            if "chrome" in target:
+
+                self.close_app_and_confirm(
+                    "chrome",
+                    "Chrome"
+                )
+
+                return
+
+
+            if "notepad" in target:
+
+                self.close_app_and_confirm(
+                    "notepad",
+                    "Notepad"
+                )
+
+                return
+
+
+            if (
+                "calculator"
+                in target
+            ):
+
+                self.close_app_and_confirm(
+                    "calculator",
+                    "Calculator"
+                )
+
+                return
+
+
+        # =================================================
+        # NAVIGATION
+        # =================================================
+
+        if command in [
+
+            "home",
+            "go home",
+            "open home",
+
+        ]:
+
+            self.open_home()
+
+
+            self.say_confirmation(
+                "Home interface."
+            )
+
+
+            return
+
+
+        if command in [
+
+            "chat",
+            "open chat",
+            "go to chat",
+
+        ]:
+
+            self.open_chat()
+
+            return
+
+
+        if command in [
+
+            "create",
+            "open create",
+            "go to create",
+
+        ]:
+
+            self.open_create()
+
+            return
+
+
+        if command in [
+
+            "search",
+            "open search",
+
+        ]:
+
+            self.open_search()
+
+            return
+
+
+        if command in [
+
+            "code",
+            "open code",
+
+        ]:
+
+            self.open_code()
+
+            return
+
+
+        if command in [
+
+            "apps",
+            "open apps",
+
+        ]:
+
+            self.open_apps()
+
+            return
+
+
+        if command in [
+
+            "settings",
+            "open settings",
+
+        ]:
+
+            self.open_settings()
+
+            return
+
+
+        # =================================================
+        # OPEN APP
+        # =================================================
+
+        if command.startswith(
+            "open "
+        ):
+
+            target = (
+                command[
+                    len("open "):
+                ]
+                .strip(
+                    " ,.!?:;-"
+                )
+            )
+
+
+            if "serato studio" in target:
+
+                if self.launch_app(
+                    "seratostudio"
+                ):
+
+                    self.say_confirmation(
+                        "Opening Serato Studio."
+                    )
+
+                return
+
+
+            if "serato dj" in target:
+
+                if self.launch_app(
+                    "seratodj"
+                ):
+
+                    self.say_confirmation(
+                        "Opening Serato DJ."
+                    )
+
+                return
+
+
+            if "visual studio" in target:
+
+                if self.launch_app(
+                    "visualstudio"
+                ):
+
+                    self.say_confirmation(
+                        "Opening Visual Studio."
+                    )
+
+                return
+
+
+            if "android studio" in target:
+
+                if self.launch_app(
+                    "androidstudio"
+                ):
+
+                    self.say_confirmation(
+                        "Opening Android Studio."
+                    )
+
+                return
+
+
+            if "chrome" in target:
+
+                if self.launch_app(
+                    "chrome"
+                ):
+
+                    self.say_confirmation(
+                        "Opening Chrome."
+                    )
+
+                return
+
+
+            if "spotify" in target:
+
+                if self.launch_app(
+                    "spotify"
+                ):
+
+                    self.say_confirmation(
+                        "Opening Spotify."
+                    )
+
+                return
+
+
+            if "file explorer" in target:
+
+                if self.launch_app(
+                    "explorer"
+                ):
+
+                    self.say_confirmation(
+                        "Opening File Explorer."
+                    )
+
+                return
+
+
+            if "notepad" in target:
+
+                if self.launch_app(
+                    "notepad"
+                ):
+
+                    self.say_confirmation(
+                        "Opening Notepad."
+                    )
+
+                return
+
+
+            if "calculator" in target:
+
+                if self.launch_app(
+                    "calculator"
+                ):
+
+                    self.say_confirmation(
+                        "Opening Calculator."
+                    )
+
+                return
+
+
+        # =================================================
         # AI FALLBACK
         # =================================================
 
-        # Anything not recognized as a deterministic action
-        # becomes a normal conversational AI request.
         self.open_chat()
 
 
