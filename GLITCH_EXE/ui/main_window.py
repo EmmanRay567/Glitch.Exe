@@ -510,6 +510,16 @@ class GlitchWindow(QMainWindow):
         )
 
 
+        # =================================================
+        # INTERACTION HISTORY EVENT SUBSCRIPTION
+        # =================================================
+
+        self.event_bus.subscribe(
+            "INTERACTION_PROCESSED",
+            self.handle_interaction_processed
+        )
+
+
         self.ai_thread = None
         self.ai_worker = None
 
@@ -1233,6 +1243,11 @@ class GlitchWindow(QMainWindow):
         self.update_system_stats()
 
 
+        self.handle_interaction_processed(
+            None
+        )
+
+
         # =================================================
         # STARTUP
         # =================================================
@@ -1890,6 +1905,75 @@ class GlitchWindow(QMainWindow):
 
         layout.addWidget(
             swipe_hint
+        )
+
+
+        # =================================================
+        # LIVE INTERACTION HISTORY
+        # =================================================
+
+        self.interaction_history_view = (
+            QPlainTextEdit()
+        )
+
+
+        self.interaction_history_view.setReadOnly(
+            True
+        )
+
+
+        self.interaction_history_view.setMaximumHeight(
+            150
+        )
+
+
+        self.interaction_history_view.setPlaceholderText(
+            "INTERACTION HISTORY // waiting for input..."
+        )
+
+
+        self.interaction_history_view.setStyleSheet(
+            """
+            QPlainTextEdit {
+
+                background:
+                    rgba(
+                        0,
+                        12,
+                        7,
+                        150
+                    );
+
+                color:
+                    #7dff9e;
+
+                border:
+                    1px solid
+                    rgba(
+                        57,
+                        255,
+                        120,
+                        85
+                    );
+
+                border-radius:
+                    8px;
+
+                padding:
+                    8px;
+
+                font-family:
+                    Consolas;
+
+                font-size:
+                    10px;
+            }
+            """
+        )
+
+
+        layout.addWidget(
+            self.interaction_history_view
         )
 
 
@@ -2819,6 +2903,386 @@ class GlitchWindow(QMainWindow):
 
 
         # =================================================
+        # ADVANCED CONTEXT HISTORY
+        # =================================================
+
+        if command in [
+            "what did i do before that",
+            "what happened before that",
+            "what was the action before that",
+        ]:
+
+            intent = (
+                self.get_interaction_by_offset(
+                    1
+                )
+            )
+
+
+            description = (
+                self.describe_interaction(
+                    intent
+                )
+            )
+
+
+            if description is None:
+
+                self.say_confirmation(
+                    "I do not have an earlier interaction in my history."
+                )
+
+            else:
+
+                self.say_confirmation(
+                    description
+                )
+
+
+            return
+
+
+        if command in [
+            "show me my last 3 actions",
+            "show my last 3 actions",
+            "what were my last 3 actions",
+            "tell me my last 3 actions",
+        ]:
+
+            descriptions = (
+                self.get_recent_interaction_descriptions(
+                    3
+                )
+            )
+
+
+            if not descriptions:
+
+                self.say_confirmation(
+                    "I do not have recent interactions to report."
+                )
+
+                return
+
+
+            spoken = (
+                "Your last actions were: "
+                + " ".join(
+                    f"{index + 1}. {description}"
+                    for index, description
+                    in enumerate(
+                        descriptions
+                    )
+                )
+            )
+
+
+            self.say_confirmation(
+                spoken
+            )
+
+            return
+
+
+        if command in [
+            "go back to the last screen i opened with gesture",
+            "return to the last screen i opened with gesture",
+            "go to the last page i opened with gesture",
+            "last page i opened with gesture",
+        ]:
+
+            target = (
+                self.get_last_navigation_target_by_source(
+                    "GESTURE"
+                )
+            )
+
+
+            if target is None:
+
+                self.say_confirmation(
+                    "I do not have a previous gesture navigation target."
+                )
+
+                return
+
+
+            self.navigate_with_intent(
+                target,
+                "VOICE"
+            )
+
+
+            readable_target = (
+                target
+                .replace(
+                    "_",
+                    " "
+                )
+                .lower()
+            )
+
+
+            self.say_confirmation(
+                f"Returning to the last page you opened with gesture: {readable_target}."
+            )
+
+            return
+
+
+        if command in [
+            "repeat my last navigation",
+            "repeat the last navigation",
+            "repeat my last page change",
+        ]:
+
+            target = (
+                self.get_last_navigation_target()
+            )
+
+
+            if target is None:
+
+                self.say_confirmation(
+                    "I do not have a previous navigation target to repeat."
+                )
+
+                return
+
+
+            self.navigate_with_intent(
+                target,
+                "VOICE"
+            )
+
+
+            readable_target = (
+                target
+                .replace(
+                    "_",
+                    " "
+                )
+                .lower()
+            )
+
+
+            self.say_confirmation(
+                f"Repeating your last navigation to {readable_target}."
+            )
+
+            return
+
+
+        # =================================================
+        # DEEPER CONTEXT AWARENESS
+        # =================================================
+
+        if command in [
+            "what did i just do",
+            "what was my last action",
+            "what did i do last",
+        ]:
+
+            description = (
+                self.describe_last_interaction()
+            )
+
+
+            if description is None:
+
+                self.say_confirmation(
+                    "I do not have a recent interaction to report."
+                )
+
+            else:
+
+                self.say_confirmation(
+                    description
+                )
+
+
+            return
+
+
+        if command in [
+            "what screen was i on before this",
+            "what was the previous screen",
+            "what page was i on before this",
+        ]:
+
+            target = (
+                self.get_previous_navigation_target()
+            )
+
+
+            if target is None:
+
+                self.say_confirmation(
+                    "I do not have a previous screen in my interaction history."
+                )
+
+            else:
+
+                readable_target = (
+                    target
+                    .replace(
+                        "_",
+                        " "
+                    )
+                    .lower()
+                )
+
+
+                self.say_confirmation(
+                    f"You were on {readable_target} before this."
+                )
+
+
+            return
+
+
+        if command in [
+            "go back two screens",
+            "back two screens",
+            "go back 2 screens",
+            "back 2 screens",
+        ]:
+
+            target = (
+                self.get_navigation_target_by_steps(
+                    2
+                )
+            )
+
+
+            if target is None:
+
+                self.say_confirmation(
+                    "I do not have enough navigation history to go back two screens."
+                )
+
+                return
+
+
+            self.navigate_with_intent(
+                target,
+                "VOICE"
+            )
+
+
+            readable_target = (
+                target
+                .replace(
+                    "_",
+                    " "
+                )
+                .lower()
+            )
+
+
+            self.say_confirmation(
+                f"Going back two screens to {readable_target}."
+            )
+
+            return
+
+
+        if command in [
+            "return to the last page i opened with voice",
+            "go to the last page i opened with voice",
+            "last page i opened with voice",
+        ]:
+
+            target = (
+                self.get_last_navigation_target_by_source(
+                    "VOICE"
+                )
+            )
+
+
+            if target is None:
+
+                self.say_confirmation(
+                    "I do not have a previous voice navigation target."
+                )
+
+                return
+
+
+            self.navigate_with_intent(
+                target,
+                "VOICE"
+            )
+
+
+            readable_target = (
+                target
+                .replace(
+                    "_",
+                    " "
+                )
+                .lower()
+            )
+
+
+            self.say_confirmation(
+                f"Returning to the last page you opened with voice: {readable_target}."
+            )
+
+            return
+
+
+        # =================================================
+        # CONTEXT-AWARE NAVIGATION
+        # =================================================
+
+        if command in [
+            "back",
+            "go back",
+            "return",
+            "return to last screen",
+            "go to the last screen",
+            "previous screen",
+        ]:
+
+            target = (
+                self.get_previous_navigation_target()
+            )
+
+
+            if target is None:
+
+                self.say_confirmation(
+                    "There is no previous screen in my interaction history."
+                )
+
+                return
+
+
+            self.navigate_with_intent(
+                target,
+                "VOICE"
+            )
+
+
+            spoken_target = (
+                target
+                .replace(
+                    "_",
+                    " "
+                )
+                .lower()
+            )
+
+
+            self.say_confirmation(
+                f"Returning to {spoken_target}."
+            )
+
+            return
+
+
+        # =================================================
         # PHASE 1 VOICE INTENT ROUTING
         # =================================================
 
@@ -3558,6 +4022,261 @@ class GlitchWindow(QMainWindow):
 
 
         # =================================================
+        # ADVANCED KEYBOARD CONTEXT HISTORY
+        # =================================================
+
+        if command in [
+            "what did i do before that",
+            "what happened before that",
+            "what was the action before that",
+        ]:
+
+            description = (
+                self.describe_interaction(
+                    self.get_interaction_by_offset(
+                        1
+                    )
+                )
+            )
+
+
+            self.response_panel.set_response(
+                description
+                if description is not None
+                else "CONTEXT // NO EARLIER INTERACTION"
+            )
+
+            return
+
+
+        if command in [
+            "show me my last 3 actions",
+            "show my last 3 actions",
+            "what were my last 3 actions",
+            "tell me my last 3 actions",
+        ]:
+
+            descriptions = (
+                self.get_recent_interaction_descriptions(
+                    3
+                )
+            )
+
+
+            if not descriptions:
+
+                self.response_panel.set_response(
+                    "CONTEXT // NO RECENT INTERACTIONS"
+                )
+
+            else:
+
+                self.response_panel.set_response(
+                    "\n".join(
+                        f"{index + 1}. {description}"
+                        for index, description
+                        in enumerate(
+                            descriptions
+                        )
+                    )
+                )
+
+
+            return
+
+
+        if command in [
+            "go back to the last screen i opened with gesture",
+            "return to the last screen i opened with gesture",
+            "go to the last page i opened with gesture",
+            "last page i opened with gesture",
+        ]:
+
+            target = (
+                self.get_last_navigation_target_by_source(
+                    "GESTURE"
+                )
+            )
+
+
+            if target is None:
+
+                self.response_panel.set_response(
+                    "CONTEXT // NO PREVIOUS GESTURE NAVIGATION TARGET"
+                )
+
+            else:
+
+                self.navigate_with_intent(
+                    target,
+                    "KEYBOARD"
+                )
+
+
+            return
+
+
+        if command in [
+            "repeat my last navigation",
+            "repeat the last navigation",
+            "repeat my last page change",
+        ]:
+
+            target = (
+                self.get_last_navigation_target()
+            )
+
+
+            if target is None:
+
+                self.response_panel.set_response(
+                    "CONTEXT // NO PREVIOUS NAVIGATION TARGET"
+                )
+
+            else:
+
+                self.navigate_with_intent(
+                    target,
+                    "KEYBOARD"
+                )
+
+
+            return
+
+
+        # =================================================
+        # DEEPER KEYBOARD CONTEXT AWARENESS
+        # =================================================
+
+        if command in [
+            "what did i just do",
+            "what was my last action",
+            "what did i do last",
+        ]:
+
+            description = (
+                self.describe_last_interaction()
+            )
+
+
+            self.response_panel.set_response(
+                description
+                if description is not None
+                else "CONTEXT // NO RECENT INTERACTION"
+            )
+
+            return
+
+
+        if command in [
+            "what screen was i on before this",
+            "what was the previous screen",
+            "what page was i on before this",
+        ]:
+
+            target = (
+                self.get_previous_navigation_target()
+            )
+
+
+            if target is None:
+
+                self.response_panel.set_response(
+                    "CONTEXT // NO PREVIOUS SCREEN"
+                )
+
+            else:
+
+                self.response_panel.set_response(
+                    f"CONTEXT // PREVIOUS SCREEN: {target}"
+                )
+
+
+            return
+
+
+        if command in [
+            "go back two screens",
+            "back two screens",
+            "go back 2 screens",
+            "back 2 screens",
+        ]:
+
+            target = (
+                self.get_navigation_target_by_steps(
+                    2
+                )
+            )
+
+
+            if target is None:
+
+                self.response_panel.set_response(
+                    "CONTEXT // NOT ENOUGH NAVIGATION HISTORY"
+                )
+
+            else:
+
+                self.navigate_with_intent(
+                    target,
+                    "KEYBOARD"
+                )
+
+
+            return
+
+
+        if command in [
+            "return to the last page i opened with voice",
+            "go to the last page i opened with voice",
+            "last page i opened with voice",
+        ]:
+
+            target = (
+                self.get_last_navigation_target_by_source(
+                    "VOICE"
+                )
+            )
+
+
+            if target is None:
+
+                self.response_panel.set_response(
+                    "CONTEXT // NO PREVIOUS VOICE NAVIGATION TARGET"
+                )
+
+            else:
+
+                self.navigate_with_intent(
+                    target,
+                    "KEYBOARD"
+                )
+
+
+            return
+
+
+        # =================================================
+        # CONTEXT-AWARE KEYBOARD NAVIGATION
+        # =================================================
+
+        if command in [
+            "back",
+            "go back",
+            "return",
+            "return to last screen",
+            "go to the last screen",
+            "previous screen",
+        ]:
+
+            self.navigate_back(
+                "KEYBOARD"
+            )
+
+            return
+
+
+        # =================================================
         # PHASE 1 KEYBOARD NAVIGATION INTENTS
         # =================================================
 
@@ -3979,6 +4698,527 @@ class GlitchWindow(QMainWindow):
     # =====================================================
     # COMMAND-BASED NAVIGATION
     # =====================================================
+
+    def handle_interaction_processed(
+        self,
+        event
+    ):
+        """
+        Refresh the visible interaction history whenever the
+        InteractionController publishes INTERACTION_PROCESSED.
+        """
+
+        try:
+
+            recent = (
+                self.interaction_controller
+                .get_recent_interactions(
+                    8
+                )
+            )
+
+
+            lines = []
+
+
+            for intent in recent:
+
+                action = (
+                    intent.normalized_action()
+                )
+
+
+                target = (
+                    intent.normalized_target()
+                )
+
+
+                source = (
+                    intent.source
+                    .strip()
+                    .upper()
+                )
+
+
+                target_text = (
+                    target
+                    if target is not None
+                    else "-"
+                )
+
+
+                lines.append(
+                    f"[{source:<8}] "
+                    f"{action:<10} -> "
+                    f"{target_text}"
+                )
+
+
+            if not lines:
+
+                lines = [
+                    "INTERACTION HISTORY // waiting for input..."
+                ]
+
+
+            self.interaction_history_view.setPlainText(
+                "\n".join(
+                    lines
+                )
+            )
+
+
+            scrollbar = (
+                self.interaction_history_view
+                .verticalScrollBar()
+            )
+
+
+            scrollbar.setValue(
+                scrollbar.maximum()
+            )
+
+
+        except Exception as error:
+
+            print(
+                f"INTERACTION HISTORY ERROR // {error}"
+            )
+
+
+    def get_interaction_by_offset(
+        self,
+        offset=0
+    ):
+        """
+        Return a recent InteractionIntent by reverse offset.
+
+        offset=0 -> most recent interaction
+        offset=1 -> interaction before that
+        """
+
+        try:
+
+            recent = (
+                self.interaction_controller
+                .get_recent_interactions(
+                    100
+                )
+            )
+
+
+            index = (
+                len(recent)
+                - 1
+                - offset
+            )
+
+
+            if (
+                index >= 0
+                and index < len(recent)
+            ):
+
+                return recent[
+                    index
+                ]
+
+
+        except Exception as error:
+
+            self.response_panel.set_response(
+                f"CONTEXT ERROR // {error}"
+            )
+
+
+        return None
+
+
+    def describe_interaction(
+        self,
+        intent
+    ):
+        """
+        Convert an InteractionIntent into a short,
+        human-readable sentence.
+        """
+
+        if intent is None:
+            return None
+
+
+        action = (
+            intent.normalized_action()
+        )
+
+
+        target = (
+            intent.normalized_target()
+        )
+
+
+        source = (
+            intent.source
+            .strip()
+            .upper()
+        )
+
+
+        if action == "NAVIGATE":
+
+            readable_target = (
+                target
+                .replace(
+                    "_",
+                    " "
+                )
+                if target is not None
+                else "an unknown screen"
+            )
+
+
+            return (
+                f"You navigated to {readable_target} "
+                f"using {source.lower()}."
+            )
+
+
+        return (
+            f"Your action was {action.lower()} "
+            f"from {source.lower()}."
+        )
+
+
+    def get_recent_interaction_descriptions(
+        self,
+        limit=3
+    ):
+        """
+        Return up to 'limit' recent interactions as readable
+        numbered descriptions, newest first.
+        """
+
+        try:
+
+            recent = (
+                self.interaction_controller
+                .get_recent_interactions(
+                    limit
+                )
+            )
+
+
+            descriptions = []
+
+
+            for intent in reversed(
+                recent
+            ):
+
+                description = (
+                    self.describe_interaction(
+                        intent
+                    )
+                )
+
+
+                if description is not None:
+
+                    descriptions.append(
+                        description
+                    )
+
+
+            return descriptions
+
+
+        except Exception as error:
+
+            self.response_panel.set_response(
+                f"CONTEXT ERROR // {error}"
+            )
+
+
+        return []
+
+
+    def get_last_navigation_target(
+        self
+    ):
+        """
+        Return the most recent navigation target that differs
+        from the screen currently being displayed.
+        """
+
+        return (
+            self.get_navigation_target_by_steps(
+                1
+            )
+        )
+
+
+    def get_last_interaction(
+        self
+    ):
+        """
+        Return the most recent InteractionIntent, if one exists.
+        """
+
+        try:
+
+            recent = (
+                self.interaction_controller
+                .get_recent_interactions(
+                    1
+                )
+            )
+
+
+            if recent:
+                return recent[-1]
+
+
+        except Exception as error:
+
+            self.response_panel.set_response(
+                f"CONTEXT ERROR // {error}"
+            )
+
+
+        return None
+
+
+    def describe_last_interaction(
+        self
+    ):
+        """
+        Describe the most recent interaction.
+        """
+
+        return (
+            self.describe_interaction(
+                self.get_last_interaction()
+            )
+        )
+
+
+    def get_navigation_target_by_steps(
+        self,
+        steps_back=1
+    ):
+        """
+        Walk backward through unique navigation states.
+
+        steps_back=1 returns the previous screen.
+        steps_back=2 returns the screen before that.
+        """
+
+        try:
+
+            recent = (
+                self.interaction_controller
+                .get_recent_interactions(
+                    100
+                )
+            )
+
+
+            current = (
+                self.current_mode
+                .strip()
+                .upper()
+            )
+
+
+            unique_targets = []
+
+
+            for intent in reversed(
+                recent
+            ):
+
+                if (
+                    intent.normalized_action()
+                    != "NAVIGATE"
+                ):
+
+                    continue
+
+
+                target = (
+                    intent.normalized_target()
+                )
+
+
+                if (
+                    target is None
+                    or target == current
+                ):
+
+                    continue
+
+
+                if (
+                    target
+                    not in unique_targets
+                ):
+
+                    unique_targets.append(
+                        target
+                    )
+
+
+            index = (
+                steps_back - 1
+            )
+
+
+            if (
+                index >= 0
+                and index < len(
+                    unique_targets
+                )
+            ):
+
+                return (
+                    unique_targets[
+                        index
+                    ]
+                )
+
+
+        except Exception as error:
+
+            self.response_panel.set_response(
+                f"CONTEXT ERROR // {error}"
+            )
+
+
+        return None
+
+
+    def get_last_navigation_target_by_source(
+        self,
+        source
+    ):
+        """
+        Return the most recent navigation target produced by
+        a specific input source, such as VOICE or MOUSE.
+        """
+
+        try:
+
+            recent = (
+                self.interaction_controller
+                .get_recent_interactions(
+                    100
+                )
+            )
+
+
+            source = (
+                source
+                .strip()
+                .upper()
+            )
+
+
+            current = (
+                self.current_mode
+                .strip()
+                .upper()
+            )
+
+
+            for intent in reversed(
+                recent
+            ):
+
+                if (
+                    intent.normalized_action()
+                    != "NAVIGATE"
+                ):
+
+                    continue
+
+
+                intent_source = (
+                    intent.source
+                    .strip()
+                    .upper()
+                )
+
+
+                target = (
+                    intent.normalized_target()
+                )
+
+
+                if (
+                    intent_source == source
+                    and target is not None
+                    and target != current
+                ):
+
+                    return target
+
+
+        except Exception as error:
+
+            self.response_panel.set_response(
+                f"CONTEXT ERROR // {error}"
+            )
+
+
+        return None
+
+
+    def get_previous_navigation_target(
+        self
+    ):
+        """
+        Return the immediately previous unique navigation target.
+        """
+
+        return (
+            self.get_navigation_target_by_steps(
+                1
+            )
+        )
+
+
+    def navigate_back(
+        self,
+        source="UNKNOWN"
+    ):
+        """
+        Context-aware navigation command.
+
+        GLITCH uses recent interaction history to determine
+        which screen should be considered the previous screen.
+        """
+
+        target = (
+            self.get_previous_navigation_target()
+        )
+
+
+        if target is None:
+
+            self.response_panel.set_response(
+                "CONTEXT // NO PREVIOUS SCREEN AVAILABLE"
+            )
+
+            return False
+
+
+        return (
+            self.navigate_with_intent(
+                target,
+                source
+            )
+        )
+
 
     def navigate_with_intent(
         self,
