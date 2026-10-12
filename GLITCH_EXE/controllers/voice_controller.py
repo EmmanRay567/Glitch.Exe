@@ -1,4 +1,5 @@
 from models.events import VoiceEvent
+from models.intent import InteractionIntent
 
 
 class VoiceController:
@@ -13,13 +14,21 @@ class VoiceController:
 
     def __init__(
         self,
-        command_router,
+        interaction_controller,
         application_service,
         event_bus=None
     ):
-        self.command_router = command_router
-        self.application_service = application_service
-        self.event_bus = event_bus
+        self.interaction_controller = (
+            interaction_controller
+        )
+
+        self.application_service = (
+            application_service
+        )
+
+        self.event_bus = (
+            event_bus
+        )
 
 
     # ---------------------------------------------------------
@@ -124,15 +133,30 @@ class VoiceController:
 
 
         if destination is None:
-
             return False
 
 
+        intent = InteractionIntent(
+
+            action="NAVIGATE",
+
+            target=destination,
+
+            source="VOICE",
+
+            confidence=1.0,
+
+            data={
+                "command": command,
+                "destination": destination,
+            }
+        )
+
+
         return (
-            self.command_router
-            .execute(
-                "NAVIGATE",
-                destination
+            self.interaction_controller
+            .handle_intent(
+                intent
             )
         )
 
