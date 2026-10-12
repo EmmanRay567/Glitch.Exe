@@ -51,6 +51,7 @@ from core.assistant import GlitchAssistant
 from core.event_bus import EventBus
 from core.command_router import CommandRouter
 from core.service_container import ServiceContainer
+from models.intent import InteractionIntent
 from commands.navigation_commands import NavigationCommand
 from controllers.navigation_controller import NavigationController
 from controllers.gesture_controller import GestureController
@@ -996,37 +997,65 @@ class GlitchWindow(QMainWindow):
         # =================================================
 
         self.sidebar.home_button.clicked.connect(
-            self.open_home
+            lambda checked=False:
+                self.navigate_with_intent(
+                    "HOME",
+                    "MOUSE"
+                )
         )
 
 
         self.sidebar.chat_button.clicked.connect(
-            self.open_chat
+            lambda checked=False:
+                self.navigate_with_intent(
+                    "CHAT",
+                    "MOUSE"
+                )
         )
 
 
         self.sidebar.create_button.clicked.connect(
-            self.open_create
+            lambda checked=False:
+                self.navigate_with_intent(
+                    "CREATE",
+                    "MOUSE"
+                )
         )
 
 
         self.sidebar.search_button.clicked.connect(
-            self.open_search
+            lambda checked=False:
+                self.navigate_with_intent(
+                    "SEARCH",
+                    "MOUSE"
+                )
         )
 
 
         self.sidebar.code_button.clicked.connect(
-            self.open_code
+            lambda checked=False:
+                self.navigate_with_intent(
+                    "CODE",
+                    "MOUSE"
+                )
         )
 
 
         self.sidebar.apps_button.clicked.connect(
-            self.open_apps
+            lambda checked=False:
+                self.navigate_with_intent(
+                    "APPS",
+                    "MOUSE"
+                )
         )
 
 
         self.sidebar.settings_button.clicked.connect(
-            self.open_settings
+            lambda checked=False:
+                self.navigate_with_intent(
+                    "SETTINGS",
+                    "MOUSE"
+                )
         )
 
 
@@ -3518,10 +3547,81 @@ class GlitchWindow(QMainWindow):
     ):
 
         if not message:
+            return
+
+
+        command = (
+            message
+            .strip()
+            .lower()
+        )
+
+
+        # =================================================
+        # PHASE 1 KEYBOARD NAVIGATION INTENTS
+        # =================================================
+
+        # The command bar can now express navigation through
+        # the same InteractionIntent pipeline as voice,
+        # gesture, and mouse input.
+        navigation_commands = {
+
+            "home": "HOME",
+            "go home": "HOME",
+            "open home": "HOME",
+
+            "chat": "CHAT",
+            "open chat": "CHAT",
+            "go to chat": "CHAT",
+
+            "create": "CREATE",
+            "open create": "CREATE",
+            "go to create": "CREATE",
+
+            "search": "SEARCH",
+            "open search": "SEARCH",
+
+            "code": "CODE",
+            "open code": "CODE",
+
+            "apps": "APPS",
+            "open apps": "APPS",
+
+            "settings": "SETTINGS",
+            "open settings": "SETTINGS",
+
+            "system matrix": "SYSTEM_MATRIX",
+            "open system matrix": "SYSTEM_MATRIX",
+            "open diagnostics": "SYSTEM_MATRIX",
+            "show diagnostics": "SYSTEM_MATRIX",
+            "show system stats": "SYSTEM_MATRIX",
+        }
+
+
+        destination = (
+            navigation_commands
+            .get(
+                command
+            )
+        )
+
+
+        if destination is not None:
+
+            self.navigate_with_intent(
+                destination,
+                "KEYBOARD"
+            )
 
             return
 
 
+        # =================================================
+        # NORMAL AI COMMAND BAR REQUEST
+        # =================================================
+
+        # Anything that is not a deterministic navigation
+        # command keeps the existing AI behavior unchanged.
         self.start_ai_request(
             message,
             self.current_mode
@@ -3879,6 +3979,56 @@ class GlitchWindow(QMainWindow):
     # =====================================================
     # COMMAND-BASED NAVIGATION
     # =====================================================
+
+    def navigate_with_intent(
+        self,
+        destination,
+        source="MOUSE"
+    ):
+        """
+        Route an input-driven navigation request through the
+        Phase 1 InteractionIntent pipeline.
+
+        Sidebar mouse clicks use source='MOUSE'. Other input
+        systems can reuse this helper later with their own
+        source labels.
+        """
+
+        try:
+
+            intent = InteractionIntent(
+
+                action="NAVIGATE",
+
+                target=destination,
+
+                source=source,
+
+                confidence=1.0,
+
+                data={
+                    "current_mode":
+                        self.current_mode,
+                }
+            )
+
+
+            return (
+                self.interaction_controller
+                .handle_intent(
+                    intent
+                )
+            )
+
+
+        except Exception as error:
+
+            self.response_panel.set_response(
+                f"INTERACTION ERROR // {error}"
+            )
+
+            return False
+
 
     def navigate_to(
         self,
