@@ -57,8 +57,10 @@ from controllers.navigation_controller import NavigationController
 from controllers.gesture_controller import GestureController
 from controllers.interaction_controller import InteractionController
 from controllers.voice_controller import VoiceController
+from controllers.power_controller import PowerController
 from services.application_service import ApplicationService
 from services.system_monitoring_service import SystemMonitoringService
+from services.system_power_service import SystemPowerService
 
 from voice.voice_engine import VoiceEngine
 from voice.voice_listener import VoiceListener
@@ -426,6 +428,36 @@ class GlitchWindow(QMainWindow):
         self.system_monitoring_service = (
             self.services.get(
                 "system_monitoring"
+            )
+        )
+
+
+        # =================================================
+        # SYSTEM POWER SERVICE
+        # =================================================
+
+        # Low-level Windows power operations live in a
+        # dedicated service. They are never called directly
+        # from voice or keyboard input.
+        self.services.register(
+            "system_power",
+            SystemPowerService(
+                self.event_bus
+            )
+        )
+
+
+        self.system_power_service = (
+            self.services.get(
+                "system_power"
+            )
+        )
+
+
+        # PowerController owns the safety/confirmation state.
+        self.power_controller = (
+            PowerController(
+                self.system_power_service
             )
         )
 
@@ -2821,6 +2853,44 @@ class GlitchWindow(QMainWindow):
 
 
         # =================================================
+        # SAFE SYSTEM POWER CONTROL
+        # =================================================
+
+        power_result = (
+            self.power_controller
+            .handle_command(
+                command,
+                "VOICE"
+            )
+        )
+
+
+        if power_result[
+            "handled"
+        ]:
+
+            message = (
+                power_result[
+                    "message"
+                ]
+                or "Power command processed."
+            )
+
+
+            self.response_panel.set_response(
+                f"POWER // {message}"
+            )
+
+
+            self.say_confirmation(
+                message
+            )
+
+
+            return
+
+
+        # =================================================
         # LIVE SEARCH
         # =================================================
 
@@ -4024,6 +4094,39 @@ class GlitchWindow(QMainWindow):
             .strip()
             .lower()
         )
+
+
+        # =================================================
+        # SAFE SYSTEM POWER CONTROL
+        # =================================================
+
+        power_result = (
+            self.power_controller
+            .handle_command(
+                command,
+                "KEYBOARD"
+            )
+        )
+
+
+        if power_result[
+            "handled"
+        ]:
+
+            message = (
+                power_result[
+                    "message"
+                ]
+                or "Power command processed."
+            )
+
+
+            self.response_panel.set_response(
+                f"POWER // {message}"
+            )
+
+
+            return
 
 
         # =================================================

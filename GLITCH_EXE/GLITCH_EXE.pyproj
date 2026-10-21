@@ -30,6 +30,7 @@
     <Compile Include="commands\__init__.py" />
     <Compile Include="config.py" />
     <Compile Include="controllers\gesture_controller.py" />
+    <Compile Include="controllers\power_controller.py" />
     <Compile Include="controllers\voice_controller.py" />
     <Compile Include="controllers\navigation_controller.py" />
     <Compile Include="controllers\__init__.py" />
@@ -53,6 +54,7 @@
     <Compile Include="repositories\__init__.py" />
     <Compile Include="services\base_service.py" />
     <Compile Include="services\application_service.py" />
+    <Compile Include="services\system_power_service.py" />
     <Compile Include="services\system_monitoring_service.py" />
     <Compile Include="services\__init__.py" />
     <Compile Include="ui\command_bar.py" />
