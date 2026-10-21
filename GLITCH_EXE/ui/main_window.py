@@ -906,8 +906,13 @@ class GlitchWindow(QMainWindow):
 
 
         # NEW SYSTEM MATRIX PAGE
+        # Phase 2: inject the shared SystemMonitoringService
+        # so the System Matrix reads from the HardwareState
+        # Digital Twin instead of collecting telemetry itself.
         self.system_matrix_page = (
-            SystemMatrixWidget()
+            SystemMatrixWidget(
+                self.system_monitoring_service
+            )
         )
 
 

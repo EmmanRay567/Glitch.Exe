@@ -1,9 +1,5 @@
 import math
-import platform
-import socket
-import time
 
-import psutil
 
 from PySide6.QtCore import (
     Qt,
@@ -748,6 +744,7 @@ class SystemMatrixWidget(QWidget):
 
     def __init__(
         self,
+        system_monitoring_service,
         parent=None
     ):
 
@@ -756,13 +753,17 @@ class SystemMatrixWidget(QWidget):
         )
 
 
-        self.previous_network = (
-            psutil.net_io_counters()
+        # Phase 2:
+        # The System Matrix no longer collects operating-system
+        # telemetry directly. It reads from the shared Digital Twin.
+        self.system_monitoring_service = (
+            system_monitoring_service
         )
 
-        self.previous_network_time = (
-            time.time()
-        )
+
+        self.previous_network_sent_mb = None
+        self.previous_network_received_mb = None
+        self.previous_network_timestamp = None
 
 
         self.build_ui()
@@ -1016,9 +1017,36 @@ class SystemMatrixWidget(QWidget):
 
     def update_stats(self):
 
+        # =================================================
+        # DIGITAL TWIN SNAPSHOT
+        # =================================================
+
+        try:
+
+            snapshot = (
+                self.system_monitoring_service
+                .get_snapshot()
+            )
+
+
+            state = (
+                snapshot[
+                    "digital_twin"
+                ]
+            )
+
+
+        except Exception:
+
+            return
+
+
+        # =================================================
         # CPU
+        # =================================================
+
         cpu = (
-            psutil.cpu_percent()
+            state.cpu_percent
         )
 
 
@@ -1028,62 +1056,40 @@ class SystemMatrixWidget(QWidget):
         )
 
 
-        # RAM
-        ram = (
-            psutil.virtual_memory()
-        )
-
+        # =================================================
+        # MEMORY
+        # =================================================
 
         self.ram_stat.set_value(
             (
-                f"{ram.percent:.0f}% // "
-                f"{ram.used / (1024**3):.1f} GB"
+                f"{state.memory_percent:.0f}% // "
+                f"{state.memory_used_gb:.1f} GB"
             ),
-            ram.percent
+            state.memory_percent
         )
 
 
-        # Disk
-        try:
+        # =================================================
+        # STORAGE
+        # =================================================
 
-            disk = (
-                psutil.disk_usage(
-                    "C:\\"
-                )
-            )
-
-            disk_percent = (
-                disk.percent
-            )
-
-
-            self.disk_stat.set_value(
-                (
-                    f"{disk.percent:.0f}% // "
-                    f"{disk.free / (1024**3):.0f} GB FREE"
-                ),
-                disk.percent
-            )
-
-        except Exception:
-
-            disk_percent = 0
-
-            self.disk_stat.set_value(
-                "UNAVAILABLE"
-            )
-
-
-        # CPU frequency
-        frequency = (
-            psutil.cpu_freq()
+        self.disk_stat.set_value(
+            (
+                f"{state.disk_percent:.0f}% // "
+                f"{state.disk_available_gb():.0f} GB FREE"
+            ),
+            state.disk_percent
         )
 
 
-        if frequency:
+        # =================================================
+        # CPU FREQUENCY
+        # =================================================
+
+        if state.cpu_frequency_mhz > 0:
 
             self.cpu_frequency_stat.set_value(
-                f"{frequency.current / 1000:.2f} GHz"
+                f"{state.cpu_frequency_mhz / 1000:.2f} GHz"
             )
 
         else:
@@ -1093,53 +1099,42 @@ class SystemMatrixWidget(QWidget):
             )
 
 
-        # Cores
-        physical = (
-            psutil.cpu_count(
-                logical=False
-            )
-        )
-
-        logical = (
-            psutil.cpu_count(
-                logical=True
-            )
-        )
-
+        # =================================================
+        # CORES
+        # =================================================
 
         self.core_stat.set_value(
-            f"{physical} PHYSICAL // {logical} LOGICAL"
+            (
+                f"{state.physical_cores} PHYSICAL // "
+                f"{state.logical_cores} LOGICAL"
+            )
         )
 
 
-        # Processes
-        process_count = len(
-            psutil.pids()
-        )
-
+        # =================================================
+        # PROCESSES
+        # =================================================
 
         self.process_stat.set_value(
             str(
-                process_count
+                state.process_count
             )
         )
 
 
-        # Uptime
-        uptime_seconds = (
-            time.time()
-            - psutil.boot_time()
-        )
-
+        # =================================================
+        # UPTIME
+        # =================================================
 
         hours = int(
-            uptime_seconds
+            state.uptime_seconds
             // 3600
         )
 
+
         minutes = int(
             (
-                uptime_seconds
+                state.uptime_seconds
                 % 3600
             )
             // 60
@@ -1151,42 +1146,73 @@ class SystemMatrixWidget(QWidget):
         )
 
 
-        # Network speed
-        now = (
-            time.time()
+        # =================================================
+        # NETWORK RATE FROM DIGITAL TWIN COUNTERS
+        # =================================================
+
+        current_time = (
+            state.timestamp.timestamp()
         )
 
 
-        current_network = (
-            psutil.net_io_counters()
+        if (
+            self.previous_network_timestamp
+            is None
+        ):
+
+            download_rate = 0.0
+            upload_rate = 0.0
+
+
+        else:
+
+            elapsed = max(
+                0.1,
+                current_time
+                - self.previous_network_timestamp
+            )
+
+
+            received_delta_mb = max(
+                0.0,
+                state.network_received_mb
+                - self.previous_network_received_mb
+            )
+
+
+            sent_delta_mb = max(
+                0.0,
+                state.network_sent_mb
+                - self.previous_network_sent_mb
+            )
+
+
+            download_rate = (
+                received_delta_mb
+                * (1024 ** 2)
+                / elapsed
+            )
+
+
+            upload_rate = (
+                sent_delta_mb
+                * (1024 ** 2)
+                / elapsed
+            )
+
+
+        self.previous_network_received_mb = (
+            state.network_received_mb
         )
 
 
-        elapsed = max(
-            0.1,
-            now
-            - self.previous_network_time
+        self.previous_network_sent_mb = (
+            state.network_sent_mb
         )
 
 
-        download_rate = (
-            current_network.bytes_recv
-            - self.previous_network.bytes_recv
-        ) / elapsed
-
-
-        upload_rate = (
-            current_network.bytes_sent
-            - self.previous_network.bytes_sent
-        ) / elapsed
-
-
-        self.previous_network = (
-            current_network
-        )
-
-        self.previous_network_time = (
-            now
+        self.previous_network_timestamp = (
+            current_time
         )
 
 
@@ -1196,6 +1222,7 @@ class SystemMatrixWidget(QWidget):
             )
         )
 
+
         self.network_up_stat.set_value(
             self.format_speed(
                 upload_rate
@@ -1203,45 +1230,47 @@ class SystemMatrixWidget(QWidget):
         )
 
 
-        # OS
+        # =================================================
+        # OPERATING SYSTEM
+        # =================================================
+
         self.os_stat.set_value(
-            (
-                f"{platform.system()} "
-                f"{platform.release()}"
+            state.operating_system
+        )
+
+
+        # =================================================
+        # LOCAL NETWORK
+        # =================================================
+
+        local_ip = (
+            state.extra.get(
+                "local_ip"
             )
         )
 
 
-        # Local IP
-        try:
-
-            hostname = (
-                socket.gethostname()
-            )
-
-            ip = (
-                socket.gethostbyname(
-                    hostname
-                )
-            )
-
+        if local_ip:
 
             self.ip_stat.set_value(
-                ip
+                local_ip
             )
 
-        except Exception:
+        else:
 
             self.ip_stat.set_value(
-                "UNAVAILABLE"
+                state.network_status
             )
 
 
-        # Send values to hologram
+        # =================================================
+        # HOLOGRAM
+        # =================================================
+
         self.hologram.set_stats(
-            cpu,
-            ram.percent,
-            disk_percent
+            state.cpu_percent,
+            state.memory_percent,
+            state.disk_percent
         )
 
 

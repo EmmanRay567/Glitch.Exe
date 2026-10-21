@@ -47,6 +47,7 @@
     <Compile Include="integrations\__init__.py" />
     <Compile Include="models\events.py" />
     <Compile Include="models\intent.py" />
+    <Compile Include="models\hardware_state.py" />
     <Compile Include="models\__init__.py" />
     <Compile Include="repositories\memory_repository.py" />
     <Compile Include="repositories\__init__.py" />
