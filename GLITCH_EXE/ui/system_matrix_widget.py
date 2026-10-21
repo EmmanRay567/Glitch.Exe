@@ -629,6 +629,10 @@ class MatrixStat(QFrame):
             """
         )
 
+        self.setMinimumHeight(
+            62
+        )
+
 
         layout = QVBoxLayout(
             self
@@ -734,6 +738,107 @@ class MatrixStat(QFrame):
                     )
                 )
             )
+
+
+# =========================================================
+# INTELLIGENCE PANEL
+# =========================================================
+
+class MatrixIntelPanel(QFrame):
+
+    def __init__(
+        self,
+        title,
+        parent=None
+    ):
+
+        super().__init__(
+            parent
+        )
+
+        self.setStyleSheet(
+            """
+            QFrame {
+                background: rgba(0, 16, 10, 135);
+                border: 1px solid rgba(57, 255, 120, 65);
+                border-radius: 7px;
+            }
+            """
+        )
+
+        # Keep the intelligence strip compact so it does not
+        # squeeze the primary telemetry cards above it.
+        self.setMinimumHeight(
+            92
+        )
+
+        self.setMaximumHeight(
+            104
+        )
+
+        layout = QVBoxLayout(
+            self
+        )
+
+        layout.setContentsMargins(
+            10,
+            8,
+            10,
+            8
+        )
+
+        self.title_label = QLabel(
+            title
+        )
+
+        self.title_label.setStyleSheet(
+            """
+            color: rgba(170,255,195,155);
+            font-family: Consolas;
+            font-size: 9px;
+            font-weight: bold;
+            """
+        )
+
+        self.content_label = QLabel(
+            "SCANNING..."
+        )
+
+        self.content_label.setWordWrap(
+            True
+        )
+
+        self.content_label.setAlignment(
+            Qt.AlignmentFlag.AlignTop
+            | Qt.AlignmentFlag.AlignLeft
+        )
+
+        self.content_label.setStyleSheet(
+            """
+            color: #8dffb1;
+            font-family: Consolas;
+            font-size: 10px;
+            font-weight: bold;
+            """
+        )
+
+        layout.addWidget(
+            self.title_label
+        )
+
+        layout.addWidget(
+            self.content_label
+        )
+
+
+    def set_text(
+        self,
+        text
+    ):
+
+        self.content_label.setText(
+            text
+        )
 
 
 # =========================================================
@@ -986,6 +1091,58 @@ class SystemMatrixWidget(QWidget):
         root.addLayout(
             body,
             1
+        )
+
+
+        # =================================================
+        # PHASE 2 INTELLIGENCE STRIP
+        # =================================================
+
+        intelligence_row = QHBoxLayout()
+
+        intelligence_row.setSpacing(
+            8
+        )
+
+        intelligence_row.setContentsMargins(
+            0,
+            6,
+            0,
+            2
+        )
+
+
+        self.top_cpu_panel = MatrixIntelPanel(
+            "TOP CPU PROCESSES"
+        )
+
+        self.top_memory_panel = MatrixIntelPanel(
+            "TOP MEMORY PROCESSES"
+        )
+
+        self.drive_panel = MatrixIntelPanel(
+            "STORAGE / DRIVES"
+        )
+
+
+        intelligence_row.addWidget(
+            self.top_cpu_panel,
+            1
+        )
+
+        intelligence_row.addWidget(
+            self.top_memory_panel,
+            1
+        )
+
+        intelligence_row.addWidget(
+            self.drive_panel,
+            1
+        )
+
+
+        root.addLayout(
+            intelligence_row
         )
 
 
@@ -1260,6 +1417,97 @@ class SystemMatrixWidget(QWidget):
 
             self.ip_stat.set_value(
                 state.network_status
+            )
+
+
+        # =================================================
+        # PROCESS / DRIVE INTELLIGENCE
+        # =================================================
+
+        if state.top_cpu_processes:
+
+            cpu_lines = []
+
+            for process in state.top_cpu_processes[:3]:
+
+                cpu_lines.append(
+                    (
+                        f"{process.name[:15]:15}  "
+                        f"{process.cpu_percent:5.1f}%"
+                    )
+                )
+
+
+            self.top_cpu_panel.set_text(
+                "\n".join(
+                    cpu_lines
+                )
+            )
+
+        else:
+
+            self.top_cpu_panel.set_text(
+                "SCANNING..."
+            )
+
+
+        if state.top_memory_processes:
+
+            memory_lines = []
+
+            for process in state.top_memory_processes[:3]:
+
+                memory_lines.append(
+                    (
+                        f"{process.name[:15]:15}  "
+                        f"{process.memory_mb:5.0f} MB"
+                    )
+                )
+
+
+            self.top_memory_panel.set_text(
+                "\n".join(
+                    memory_lines
+                )
+            )
+
+        else:
+
+            self.top_memory_panel.set_text(
+                "SCANNING..."
+            )
+
+
+        if state.drives:
+
+            drive_lines = []
+
+            for drive in state.drives[:3]:
+
+                drive_name = (
+                    drive.device
+                    or drive.mountpoint
+                )
+
+                drive_lines.append(
+                    (
+                        f"{drive_name[:10]:10} "
+                        f"{drive.percent_used:5.1f}% // "
+                        f"{drive.free_gb:.0f} GB FREE"
+                    )
+                )
+
+
+            self.drive_panel.set_text(
+                "\n".join(
+                    drive_lines
+                )
+            )
+
+        else:
+
+            self.drive_panel.set_text(
+                "SCANNING..."
             )
 
 
