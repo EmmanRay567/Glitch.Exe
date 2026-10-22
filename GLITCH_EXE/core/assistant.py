@@ -6,10 +6,6 @@ from openai import OpenAI
 from core.memory import MemoryManager
 
 
-# =========================================================
-# GLITCH.EXE ASSISTANT
-# =========================================================
-
 class GlitchAssistant:
 
     def __init__(self):
@@ -36,6 +32,70 @@ class GlitchAssistant:
 
         self.memory = MemoryManager()
 
+        # Conversation depth can be changed naturally at runtime.
+        self.response_style = "BRIEF"
+
+
+    # =====================================================
+    # RESPONSE STYLE
+    # =====================================================
+
+    def set_response_style(
+        self,
+        style
+    ):
+
+        style = (
+            str(style)
+            .strip()
+            .upper()
+        )
+
+        if style in {
+            "BRIEF",
+            "NORMAL",
+            "DETAILED",
+        }:
+
+            self.response_style = (
+                style
+            )
+
+
+    def _response_style_prompt(
+        self
+    ):
+
+        if (
+            self.response_style
+            == "DETAILED"
+        ):
+
+            return (
+                "The user currently wants detailed answers. "
+                "Explain thoroughly, but stay organized and avoid repetition."
+            )
+
+        if (
+            self.response_style
+            == "NORMAL"
+        ):
+
+            return (
+                "Use a natural conversational amount of detail. "
+                "Answer directly and avoid unnecessary background."
+            )
+
+        return (
+            "Default to brief spoken-assistant answers. "
+            "For simple questions, answer in 1 to 3 sentences. "
+            "Do not restate the user's question. "
+            "Do not add background, examples, caveats, or lists unless they are useful. "
+            "Avoid long introductions and conclusions. "
+            "Give the direct answer first. "
+            "Only expand when the user asks for explanation, examples, steps, detail, or depth."
+        )
+
 
     # =====================================================
     # MEMORY CONTEXT
@@ -58,9 +118,7 @@ class GlitchAssistant:
             if not memories:
                 return ""
 
-
             lines = []
-
 
             for item in memories:
 
@@ -73,26 +131,21 @@ class GlitchAssistant:
                         item
                     )
 
-
                 elif isinstance(
                     item,
                     dict
                 ):
 
                     value = (
-
                         item.get(
                             "content"
                         )
-
                         or item.get(
                             "memory"
                         )
-
                         or item.get(
                             "text"
                         )
-
                         or str(
                             item
                         )
@@ -103,7 +156,6 @@ class GlitchAssistant:
                             value
                         )
                     )
-
 
                 elif isinstance(
                     item,
@@ -121,7 +173,6 @@ class GlitchAssistant:
                             )
                         )
 
-
                 else:
 
                     lines.append(
@@ -130,23 +181,16 @@ class GlitchAssistant:
                         )
                     )
 
-
             if not lines:
                 return ""
 
-
             return (
-
                 "\n\nRelevant GLITCH memory:\n"
-
                 + "\n".join(
-
                     f"- {line}"
-
                     for line in lines
                 )
             )
-
 
         except Exception as error:
 
@@ -173,14 +217,11 @@ class GlitchAssistant:
             .lower()
         )
 
-
         prefixes = [
-
             "remember that ",
             "remember ",
             "save that ",
         ]
-
 
         for prefix in prefixes:
 
@@ -195,14 +236,12 @@ class GlitchAssistant:
                     .strip()
                 )
 
-
                 if not content:
 
                     return (
                         True,
                         "MEMORY COMMAND RECEIVED // NOTHING TO STORE."
                     )
-
 
                 try:
 
@@ -215,14 +254,12 @@ class GlitchAssistant:
                         f"MEMORY STORED // {content}"
                     )
 
-
                 except Exception as error:
 
                     return (
                         True,
                         f"MEMORY ERROR // {error}"
                     )
-
 
         return (
             False,
@@ -245,11 +282,9 @@ class GlitchAssistant:
             )
         )
 
-
         if handled:
 
             return response
-
 
         memory_context = (
             self._memory_context(
@@ -257,23 +292,19 @@ class GlitchAssistant:
             )
         )
 
-
         system_prompt = (
-
             "You are GLITCH.EXE, a futuristic desktop AI assistant. "
-
-            "You are helpful, intelligent, friendly, concise, "
-            "and technically capable. "
-
-            "Your personality has a subtle cybernetic/glitch aesthetic "
-            "without becoming difficult to read. "
-
+            "You are intelligent, warm, calm, technically capable, and natural. "
+            "Sound like a capable conversation partner, not a report generator. "
+            "Use contractions naturally. "
+            "Avoid filler, repeated acknowledgements, and repetitive conclusions. "
+            "Do not narrate your hidden reasoning. "
+            "Your cybernetic aesthetic should be subtle and never reduce clarity. "
             "You assist with software engineering, AI, creative technology, "
             "music production, research, productivity, and general questions. "
-
-            "When memory context is supplied, use it naturally when relevant."
+            "When memory context is supplied, use it naturally when relevant. "
+            + self._response_style_prompt()
         )
-
 
         response = (
             self.client
@@ -304,7 +335,6 @@ class GlitchAssistant:
             )
         )
 
-
         return (
             response.output_text
         )
@@ -325,24 +355,16 @@ class GlitchAssistant:
             )
         )
 
-
         system_prompt = (
-
             "You are GLITCH.EXE operating in LIVE SEARCH mode. "
-
-            "Use web search to answer the user's request with "
-            "current information. "
-
+            "Use web search to answer with current information. "
             "Prefer authoritative and recent sources. "
-
-            "Be concise but useful. "
-
+            "Give the direct answer first. "
+            "Do not restate the user's question. "
             "Include relevant dates when freshness matters. "
-
-            "Do not claim information is current unless supported "
-            "by the web search results."
+            "Do not claim information is current unless supported by search results. "
+            + self._response_style_prompt()
         )
-
 
         response = (
             self.client
@@ -380,7 +402,6 @@ class GlitchAssistant:
                 ],
             )
         )
-
 
         return (
             response.output_text

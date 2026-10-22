@@ -58,9 +58,16 @@ from controllers.gesture_controller import GestureController
 from controllers.interaction_controller import InteractionController
 from controllers.voice_controller import VoiceController
 from controllers.power_controller import PowerController
+from controllers.system_query_controller import SystemQueryController
+from controllers.conversation_controller import ConversationController
+from controllers.context_controller import ContextController
+from controllers.weather_query_controller import WeatherQueryController
 from services.application_service import ApplicationService
 from services.system_monitoring_service import SystemMonitoringService
 from services.system_power_service import SystemPowerService
+from services.weather_service import WeatherService
+from services.location_service import LocationService
+from services.adaptive_context_service import AdaptiveContextService
 
 from voice.voice_engine import VoiceEngine
 from voice.voice_listener import VoiceListener
@@ -135,6 +142,56 @@ class AIWorker(QObject):
 
             self.error.emit(
                 str(error)
+            )
+
+
+# =========================================================
+# WEATHER WORKER
+# =========================================================
+
+class WeatherWorker(QObject):
+
+    finished = Signal(dict)
+    error = Signal(str)
+
+    def __init__(
+        self,
+        weather_query_controller,
+        command
+    ):
+
+        super().__init__()
+
+        self.weather_query_controller = (
+            weather_query_controller
+        )
+
+        self.command = (
+            command
+        )
+
+
+    def run(self):
+
+        try:
+
+            result = (
+                self.weather_query_controller
+                .handle_query(
+                    self.command
+                )
+            )
+
+            self.finished.emit(
+                result
+            )
+
+        except Exception as error:
+
+            self.error.emit(
+                str(
+                    error
+                )
             )
 
 
@@ -331,6 +388,9 @@ class GlitchWindow(QMainWindow):
 
             "gesture_dwell_ms":
                 450,
+
+            "weather_location":
+                "",
         }
 
 
@@ -460,6 +520,88 @@ class GlitchWindow(QMainWindow):
                 self.system_power_service
             )
         )
+
+
+        # =================================================
+        # SYSTEM QUERY CONTROLLER
+        # =================================================
+
+        # Answers deterministic questions about the local
+        # computer from the HardwareState Digital Twin.
+        self.system_query_controller = (
+            SystemQueryController(
+                self.system_monitoring_service
+            )
+        )
+
+
+        # =================================================
+        # CONVERSATION CONTROLLER
+        # =================================================
+
+        # Wake once, then allow natural follow-up speech for a
+        # short active session without repeating "Glitch".
+        self.conversation_controller = (
+            ConversationController(
+                timeout_seconds=40.0
+            )
+        )
+
+
+        # =================================================
+        # CONTEXT CONTROLLER
+        # =================================================
+
+        # Adaptive context owns rolling conversation memory
+        # plus a lightweight long-term user profile.
+        self.adaptive_context_service = (
+            AdaptiveContextService()
+        )
+
+
+        # Resolves short conversational follow-ups such as
+        # "what about CPU?", "why is it doing that?",
+        # and "close it".
+        self.context_controller = (
+            ContextController(
+                self.adaptive_context_service
+            )
+        )
+
+
+        # =================================================
+        # WEATHER INTELLIGENCE
+        # =================================================
+
+        self.location_service = (
+            LocationService()
+        )
+
+
+        self.weather_service = (
+            WeatherService()
+        )
+
+
+        self.weather_query_controller = (
+            WeatherQueryController(
+                self.weather_service,
+                default_location=(
+                    self.settings_data
+                    .get(
+                        "weather_location"
+                    )
+                    or None
+                ),
+                location_service=
+                    self.location_service
+            )
+        )
+
+
+        self.weather_thread = None
+        self.weather_worker = None
+        self.weather_should_speak = False
 
 
         # =================================================
@@ -1305,6 +1447,52 @@ class GlitchWindow(QMainWindow):
             3000,
             self.start_voice_listener
         )
+
+
+        # Windows requires the first location permission request
+        # to originate from the foreground UI thread.
+        QTimer.singleShot(
+            4500,
+            self.initialize_location_access
+        )
+
+
+    # =====================================================
+    # LOCATION ACCESS
+    # =====================================================
+
+    def initialize_location_access(
+        self
+    ):
+
+        granted = (
+            self.location_service
+            .request_access()
+        )
+
+
+        if granted:
+
+            print(
+                "LOCATION ACCESS // GRANTED"
+            )
+
+        else:
+
+            print(
+                "LOCATION ACCESS // UNAVAILABLE"
+            )
+
+            if (
+                self.location_service
+                .last_error
+            ):
+
+                print(
+                    "LOCATION ERROR //",
+                    self.location_service
+                    .last_error
+                )
 
 
     # =====================================================
@@ -2763,6 +2951,148 @@ class GlitchWindow(QMainWindow):
 
 
     # =====================================================
+    # SPEECH INTERRUPTION / RESPONSE DEPTH
+    # =====================================================
+
+    def is_speech_interrupt_command(
+        self,
+        transcript
+    ):
+
+        command = (
+            transcript
+            .strip()
+            .lower()
+            .strip(
+                " ,.!?:;-"
+            )
+        )
+
+
+        if command.startswith(
+            "glitch "
+        ):
+
+            command = (
+                command[
+                    len("glitch "):
+                ]
+                .strip()
+            )
+
+
+        return command in {
+            "stop",
+            "stop talking",
+            "stop speaking",
+            "quiet",
+            "be quiet",
+            "that's enough",
+            "that is enough",
+            "enough",
+            "cancel response",
+            "cancel that",
+        }
+
+
+    def handle_response_style_command(
+        self,
+        transcript
+    ):
+
+        command = (
+            transcript
+            .strip()
+            .lower()
+            .strip(
+                " ,.!?:;-"
+            )
+        )
+
+
+        if command.startswith(
+            "glitch "
+        ):
+
+            command = (
+                command[
+                    len("glitch "):
+                ]
+                .strip()
+            )
+
+
+        brief_commands = {
+            "keep it brief",
+            "keep it short",
+            "short answers",
+            "shorter answers",
+            "be concise",
+            "give me the short version",
+            "brief answers",
+        }
+
+
+        detailed_commands = {
+            "go deeper",
+            "explain more",
+            "tell me more",
+            "more detail",
+            "be more detailed",
+            "give me more detail",
+        }
+
+
+        normal_commands = {
+            "normal answers",
+            "normal detail",
+            "regular detail",
+        }
+
+
+        if command in brief_commands:
+
+            self.assistant.set_response_style(
+                "BRIEF"
+            )
+
+            self.say_confirmation(
+                "Got it. I'll keep it brief."
+            )
+
+            return True
+
+
+        if command in detailed_commands:
+
+            self.assistant.set_response_style(
+                "DETAILED"
+            )
+
+            self.say_confirmation(
+                "Got it. I'll go deeper."
+            )
+
+            return True
+
+
+        if command in normal_commands:
+
+            self.assistant.set_response_style(
+                "NORMAL"
+            )
+
+            self.say_confirmation(
+                "Got it. Normal detail."
+            )
+
+            return True
+
+
+        return False
+
+
+    # =====================================================
     # VOICE COMMAND PROCESSOR
     # =====================================================
 
@@ -2771,7 +3101,43 @@ class GlitchWindow(QMainWindow):
         transcript
     ):
 
+        # Interrupt commands must be processed even while
+        # GLITCH is actively speaking.
+        if self.is_speech_interrupt_command(
+            transcript
+        ):
+
+            self.voice_engine.stop()
+
+            self.response_panel.set_response(
+                "GLITCH // SPEECH STOPPED"
+            )
+
+            self.set_voice_input_status(
+                "LISTENING"
+            )
+
+            if (
+                hasattr(
+                    self,
+                    "conversation_controller"
+                )
+                and self.conversation_controller.is_active()
+            ):
+
+                self.conversation_controller.touch()
+
+            return
+
+
         if self.voice_output_active:
+            return
+
+
+        if self.handle_response_style_command(
+            transcript
+        ):
+
             return
 
 
@@ -2815,12 +3181,42 @@ class GlitchWindow(QMainWindow):
 
 
         # =================================================
-        # WAKE WORD
+        # CONVERSATIONAL WAKE / SESSION GATE
         # =================================================
 
-        if not command.startswith(
-            "glitch"
+        wake_word_used = (
+            command.startswith(
+                "glitch"
+            )
+        )
+
+
+        if wake_word_used:
+
+            self.conversation_controller.start_session()
+
+
+            command = (
+                command[
+                    len("glitch"):
+                ]
+                .strip(
+                    " ,.!?:;-"
+                )
+            )
+
+
+        elif (
+            self.conversation_controller
+            .is_active()
         ):
+
+            # Natural follow-up speech is allowed while the
+            # conversation window is active.
+            self.conversation_controller.touch()
+
+
+        else:
 
             QTimer.singleShot(
                 1200,
@@ -2833,18 +3229,63 @@ class GlitchWindow(QMainWindow):
             return
 
 
+        if not command:
+
+            self.say_confirmation(
+                "Yeah?"
+            )
+
+            return
+
+
+        if (
+            self.conversation_controller
+            .is_end_phrase(
+                command
+            )
+        ):
+
+            ending_message = (
+                self.conversation_controller
+                .ending_response()
+            )
+
+
+            self.conversation_controller.end_session()
+
+
+            self.response_panel.set_response(
+                f"CONVERSATION // {ending_message}"
+            )
+
+
+            if self.voice_enabled:
+
+                self.voice_engine.speak(
+                    ending_message
+                )
+
+            else:
+
+                self.set_voice_input_status(
+                    "LISTENING"
+                )
+
+
+            return
+
+
+        self.conversation_controller.touch()
+
+
+        # Resolve short follow-ups into explicit commands before
+        # deterministic routing.
         command = (
-            command[
-                len("glitch"):
-            ]
-            .strip(
-                " ,.!?:;-"
+            self.context_controller
+            .resolve(
+                command
             )
         )
-
-
-        if not command:
-            return
 
 
         self.set_voice_input_status(
@@ -2886,6 +3327,66 @@ class GlitchWindow(QMainWindow):
                 message
             )
 
+
+            return
+
+
+        # =================================================
+        # DIGITAL TWIN SYSTEM QUERIES
+        # =================================================
+
+        system_query_result = (
+            self.system_query_controller
+            .handle_query(
+                command
+            )
+        )
+
+
+        if system_query_result[
+            "handled"
+        ]:
+
+            self.context_controller.remember_system_result(
+                system_query_result
+            )
+
+
+            message = (
+                system_query_result[
+                    "message"
+                ]
+            )
+
+
+            self.response_panel.set_response(
+                f"SYSTEM // {message}"
+            )
+
+
+            self.say_confirmation(
+                message
+            )
+
+
+            return
+
+
+        # =================================================
+        # LIVE WEATHER INTELLIGENCE
+        # =================================================
+
+        if (
+            self.weather_query_controller
+            .can_handle(
+                command
+            )
+        ):
+
+            self.start_weather_request(
+                command,
+                speak_response=True
+            )
 
             return
 
@@ -3380,6 +3881,16 @@ class GlitchWindow(QMainWindow):
             )
 
 
+            if action_type in [
+                "open_app",
+                "close_app",
+            ]:
+
+                self.context_controller.remember_app_from_command(
+                    command
+                )
+
+
             message = (
                 result[
                     "message"
@@ -3454,6 +3965,44 @@ class GlitchWindow(QMainWindow):
         # AI FALLBACK
         # =================================================
 
+        # During an active voice conversation, do NOT force the
+        # interface into CHAT mode. Keep the user on the current
+        # screen and let the AI answer conversationally in place.
+        if (
+            hasattr(
+                self,
+                "conversation_controller"
+            )
+            and self.conversation_controller.is_active()
+        ):
+
+            self.chat_history.append(
+                f"404 VOICE > {command}"
+            )
+
+
+            contextual_command = (
+                self.context_controller
+                .build_ai_context(
+                    command
+                )
+            )
+
+
+            self.start_ai_request(
+                contextual_command,
+                "CONVERSATION"
+            )
+
+
+            self.conversation_controller.touch()
+
+
+            return
+
+
+        # Outside an active conversation, preserve the original
+        # behavior and route normal voice AI requests to CHAT.
         self.open_chat()
 
 
@@ -3477,15 +4026,38 @@ class GlitchWindow(QMainWindow):
         text
     ):
 
-        self.response_panel.set_response(
+        spoken_text = (
             text
+        )
+
+
+        if (
+            hasattr(
+                self,
+                "conversation_controller"
+            )
+            and self.conversation_controller.is_active()
+        ):
+
+            spoken_text = (
+                self.conversation_controller
+                .decorate_confirmation(
+                    text
+                )
+            )
+
+            self.conversation_controller.touch()
+
+
+        self.response_panel.set_response(
+            spoken_text
         )
 
 
         if self.voice_enabled:
 
             self.voice_engine.speak(
-                text
+                spoken_text
             )
 
         else:
@@ -3963,6 +4535,164 @@ class GlitchWindow(QMainWindow):
 
 
     # =====================================================
+    # WEATHER
+    # =====================================================
+
+    def start_weather_request(
+        self,
+        command,
+        speak_response=False
+    ):
+
+        if (
+            self.weather_thread is not None
+            and self.weather_thread.isRunning()
+        ):
+
+            self.response_panel.set_response(
+                "WEATHER // REQUEST ALREADY IN PROGRESS..."
+            )
+
+            return
+
+
+        self.weather_should_speak = (
+            speak_response
+        )
+
+
+        self.response_panel.set_response(
+            "WEATHER // CHECKING LIVE FORECAST..."
+        )
+
+
+        self.weather_thread = (
+            QThread()
+        )
+
+
+        self.weather_worker = (
+            WeatherWorker(
+                self.weather_query_controller,
+                command
+            )
+        )
+
+
+        self.weather_worker.moveToThread(
+            self.weather_thread
+        )
+
+
+        self.weather_thread.started.connect(
+            self.weather_worker.run
+        )
+
+
+        self.weather_worker.finished.connect(
+            self.handle_weather_response
+        )
+
+
+        self.weather_worker.error.connect(
+            self.handle_weather_error
+        )
+
+
+        self.weather_worker.finished.connect(
+            self.weather_thread.quit
+        )
+
+
+        self.weather_worker.error.connect(
+            self.weather_thread.quit
+        )
+
+
+        self.weather_worker.finished.connect(
+            self.weather_worker.deleteLater
+        )
+
+
+        self.weather_worker.error.connect(
+            self.weather_worker.deleteLater
+        )
+
+
+        self.weather_thread.finished.connect(
+            self.weather_thread.deleteLater
+        )
+
+
+        self.weather_thread.finished.connect(
+            self.cleanup_weather_thread
+        )
+
+
+        self.weather_thread.start()
+
+
+    def handle_weather_response(
+        self,
+        result
+    ):
+
+        message = (
+            result.get(
+                "message"
+            )
+            or "Weather data unavailable."
+        )
+
+
+        self.response_panel.set_response(
+            f"WEATHER // {message}"
+        )
+
+
+        self.context_controller.remember_weather_result(
+            result
+        )
+
+
+        if (
+            self.weather_should_speak
+            and self.voice_enabled
+        ):
+
+            self.voice_engine.speak(
+                message
+            )
+
+
+        if (
+            hasattr(
+                self,
+                "conversation_controller"
+            )
+            and self.conversation_controller.is_active()
+        ):
+
+            self.conversation_controller.touch()
+
+
+    def handle_weather_error(
+        self,
+        error
+    ):
+
+        self.response_panel.set_response(
+            f"WEATHER ERROR // {error}"
+        )
+
+
+    def cleanup_weather_thread(self):
+
+        self.weather_thread = None
+        self.weather_worker = None
+
+
+    # =====================================================
     # AI
     # =====================================================
 
@@ -3998,6 +4728,12 @@ class GlitchWindow(QMainWindow):
 
             self.response_panel.set_response(
                 "SEARCH // ACCESSING LIVE NETWORK..."
+            )
+
+        elif mode == "CONVERSATION":
+
+            self.response_panel.set_response(
+                "GLITCH // THINKING..."
             )
 
         else:
@@ -4096,6 +4832,21 @@ class GlitchWindow(QMainWindow):
         )
 
 
+        # Give keyboard commands the same short-reference
+        # resolution used by voice.
+        command = (
+            self.context_controller
+            .resolve(
+                command
+            )
+        )
+
+
+        self.adaptive_context_service.observe_user(
+            command
+        )
+
+
         # =================================================
         # SAFE SYSTEM POWER CONTROL
         # =================================================
@@ -4125,6 +4876,59 @@ class GlitchWindow(QMainWindow):
                 f"POWER // {message}"
             )
 
+
+            return
+
+
+        # =================================================
+        # DIGITAL TWIN SYSTEM QUERIES
+        # =================================================
+
+        system_query_result = (
+            self.system_query_controller
+            .handle_query(
+                command
+            )
+        )
+
+
+        if system_query_result[
+            "handled"
+        ]:
+
+            self.context_controller.remember_system_result(
+                system_query_result
+            )
+
+
+            self.response_panel.set_response(
+                (
+                    "SYSTEM // "
+                    + system_query_result[
+                        "message"
+                    ]
+                )
+            )
+
+
+            return
+
+
+        # =================================================
+        # LIVE WEATHER INTELLIGENCE
+        # =================================================
+
+        if (
+            self.weather_query_controller
+            .can_handle(
+                command
+            )
+        ):
+
+            self.start_weather_request(
+                command,
+                speak_response=False
+            )
 
             return
 
@@ -4449,8 +5253,16 @@ class GlitchWindow(QMainWindow):
 
         # Anything that is not a deterministic navigation
         # command keeps the existing AI behavior unchanged.
+        contextual_command = (
+            self.context_controller
+            .build_ai_context(
+                command
+            )
+        )
+
+
         self.start_ai_request(
-            message,
+            contextual_command,
             self.current_mode
         )
 
@@ -4470,11 +5282,23 @@ class GlitchWindow(QMainWindow):
         )
 
 
+        self.adaptive_context_service.observe_assistant(
+            response
+        )
+
+
         if mode == "CHAT":
 
             self.chat_history.append(
                 f"\nGLITCH > {response}\n"
             )
+
+
+        elif mode == "CONVERSATION":
+
+            # Spoken conversational responses stay in the current
+            # interface instead of being treated as CHAT history.
+            pass
 
 
         elif mode == "SEARCH":
@@ -4505,6 +5329,17 @@ class GlitchWindow(QMainWindow):
             0.75,
             12
         )
+
+
+        if (
+            hasattr(
+                self,
+                "conversation_controller"
+            )
+            and self.conversation_controller.is_active()
+        ):
+
+            self.conversation_controller.touch()
 
 
         if self.voice_enabled:
