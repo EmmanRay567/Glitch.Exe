@@ -40,3 +40,20 @@ Thumbs.db
 
 # Legacy duplicate data folder
 GLITCH_EXE/Data Folder/
+# GLITCH private/runtime authentication data
+GLITCH_EXE/data/auth/intruders/
+GLITCH_EXE/data/auth/auth_log.jsonl
+GLITCH_EXE/data/auth/owner_profile.npz
+GLITCH_EXE/data/auth/lockout.json
+
+# GLITCH private conversation/profile state
+GLITCH_EXE/data/conversation_history.json
+GLITCH_EXE/data/glitch_profile.json
+
+# SQLite runtime state
+*.db-wal
+*.db-shm
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite3-wal
+*.sqlite3-shm
