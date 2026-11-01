@@ -29,7 +29,6 @@ class WeatherQueryController:
         self.last_location = None
         self.last_weather_state = None
 
-
     def set_default_location(
         self,
         location
@@ -37,6 +36,43 @@ class WeatherQueryController:
 
         self.default_location = (
             location
+        )
+
+    def _is_current_area_request(
+        self,
+        command
+    ):
+
+        lowered = (
+            str(
+                command
+                or ""
+            )
+            .lower()
+            .strip()
+        )
+
+        phrases = [
+            "my area",
+            "near me",
+            "around me",
+            "my location",
+            "current location",
+            "where i am",
+            "where i'm at",
+            "where i’m at",
+            "weather here",
+            "forecast here",
+            "temperature here",
+            "rain here",
+            "outside here",
+            "local weather",
+            "local forecast",
+        ]
+
+        return any(
+            phrase in lowered
+            for phrase in phrases
         )
 
 
@@ -61,11 +97,21 @@ class WeatherQueryController:
             "wind in ",
         ]
 
-
         lowered = (
             command.lower()
         )
 
+        relative_locations = {
+            "my area",
+            "my location",
+            "current location",
+            "here",
+            "near me",
+            "around me",
+            "where i am",
+            "where i'm at",
+            "where i’m at",
+        }
 
         for marker in markers:
 
@@ -82,11 +128,14 @@ class WeatherQueryController:
                     )
                 )
 
+                if (
+                    location
+                    in relative_locations
+                ):
+                    return None
 
                 if location:
-
                     return location
-
 
         return None
 
@@ -96,12 +145,17 @@ class WeatherQueryController:
         command
     ):
 
+        current_area_request = (
+            self._is_current_area_request(
+                command
+            )
+        )
+
         explicit = (
             self._extract_location(
                 command
             )
         )
-
 
         if explicit:
 
@@ -111,6 +165,10 @@ class WeatherQueryController:
             }
 
 
+        # "my area", "near me", "here", and generic weather
+        # requests use the LocationService. The LocationService
+        # itself handles Windows geolocation and its safe coarse
+        # network fallback.
         if self.location_service is not None:
 
             current = (
@@ -118,14 +176,35 @@ class WeatherQueryController:
                 .get_current_location()
             )
 
-
             if (
                 current is not None
                 and current.available
             ):
 
+                source = str(
+                    getattr(
+                        current,
+                        "source",
+                        ""
+                    )
+                    or ""
+                ).upper()
+
+                if source.startswith(
+                    "IP_"
+                ):
+                    label = (
+                        "your approximate area"
+                    )
+                else:
+                    label = (
+                        "your current area"
+                    )
+
                 return {
-                    "type": "COORDINATES",
+                    "type":
+                        "COORDINATES",
+
                     "latitude":
                         current.latitude,
 
@@ -133,15 +212,33 @@ class WeatherQueryController:
                         current.longitude,
 
                     "label":
-                        "your current area",
+                        label,
                 }
+
+
+        # For an explicitly relative request, do not accidentally
+        # reuse the city from a previous question such as
+        # "weather in Miami". Prefer the user's configured weather
+        # location if one exists.
+        if current_area_request:
+
+            if self.default_location:
+
+                return {
+                    "type": "NAMED",
+                    "value":
+                        self.default_location,
+                }
+
+            return None
 
 
         if self.last_location:
 
             return {
                 "type": "NAMED",
-                "value": self.last_location,
+                "value":
+                    self.last_location,
             }
 
 
@@ -149,7 +246,8 @@ class WeatherQueryController:
 
             return {
                 "type": "NAMED",
-                "value": self.default_location,
+                "value":
+                    self.default_location,
             }
 
 
@@ -165,22 +263,16 @@ class WeatherQueryController:
             command.lower()
         )
 
-
         if (
             "day after tomorrow"
             in lowered
         ):
-
             return 2
 
-
         if "tomorrow" in lowered:
-
             return 1
 
-
         return 0
-
 
     def _format_hour(
         self,
@@ -195,28 +287,22 @@ class WeatherQueryController:
             .hour
         )
 
-
         suffix = (
             "AM"
             if hour < 12
             else "PM"
         )
 
-
         display_hour = (
             hour % 12
         )
 
-
         if display_hour == 0:
-
             display_hour = 12
-
 
         return (
             f"{display_hour} {suffix}"
         )
-
 
     def _rain_window(
         self,
@@ -228,11 +314,8 @@ class WeatherQueryController:
             day_index
         )
 
-
         if day is None:
-
             return None
-
 
         samples = [
             item
@@ -242,11 +325,8 @@ class WeatherQueryController:
             )
         ]
 
-
         if not samples:
-
             return None
-
 
         peak = max(
             samples,
@@ -254,14 +334,12 @@ class WeatherQueryController:
                 item.precipitation_probability
         )
 
-
         return (
             peak.precipitation_probability,
             self._format_hour(
                 peak.time
             )
         )
-
 
     def _current_summary(
         self,
@@ -271,7 +349,6 @@ class WeatherQueryController:
         today = state.day(0)
 
         extra = ""
-
 
         if today:
 
@@ -284,7 +361,6 @@ class WeatherQueryController:
                 f"{today.precipitation_probability_max:.0f} percent."
             )
 
-
         return (
             f"In {state.location_name}, it's currently "
             f"{state.temperature_f:.0f} degrees with "
@@ -296,7 +372,6 @@ class WeatherQueryController:
             f"{extra}"
         )
 
-
     def _day_summary(
         self,
         state,
@@ -307,24 +382,19 @@ class WeatherQueryController:
             day_index
         )
 
-
         if day is None:
 
             return (
                 "That forecast day is not available yet."
             )
 
-
         if day_index == 0:
-
             day_name = "Today"
 
         elif day_index == 1:
-
             day_name = "Tomorrow"
 
         else:
-
             day_name = (
                 datetime
                 .fromisoformat(
@@ -334,7 +404,6 @@ class WeatherQueryController:
                     "%A"
                 )
             )
-
 
         return (
             f"{day_name} in {state.location_name} should have "
@@ -347,7 +416,6 @@ class WeatherQueryController:
             f"{day.wind_speed_max_mph:.0f} miles per hour."
         )
 
-
     def _rain_summary(
         self,
         state,
@@ -358,13 +426,11 @@ class WeatherQueryController:
             day_index
         )
 
-
         if day is None:
 
             return (
                 "I don't have that forecast day available."
             )
-
 
         window = (
             self._rain_window(
@@ -373,13 +439,11 @@ class WeatherQueryController:
             )
         )
 
-
         day_name = (
             "today"
             if day_index == 0
             else "tomorrow"
         )
-
 
         if window:
 
@@ -387,31 +451,25 @@ class WeatherQueryController:
                 window
             )
 
-
             if probability >= 70:
-
                 confidence = (
                     "Rain looks fairly likely"
                 )
 
             elif probability >= 40:
-
                 confidence = (
                     "Rain is possible"
                 )
 
             elif probability >= 20:
-
                 confidence = (
                     "There's a smaller chance of rain"
                 )
 
             else:
-
                 confidence = (
                     "Rain looks unlikely"
                 )
-
 
             return (
                 f"{confidence} {day_name} in "
@@ -420,10 +478,63 @@ class WeatherQueryController:
                 f"{probability:.0f} percent around {hour}."
             )
 
-
         return (
             f"The maximum precipitation chance {day_name} is "
             f"{day.precipitation_probability_max:.0f} percent."
+        )
+
+    def _is_location_query(
+        self,
+        command
+    ):
+
+        lowered = (
+            str(
+                command
+                or ""
+            )
+            .strip()
+            .lower()
+            .strip(
+                " ,.!?:;-"
+            )
+        )
+
+        phrases = {
+            "where am i",
+            "where am i at",
+            "where am i currently",
+            "where am i currently at",
+            "what is my current location",
+            "what's my current location",
+            "whats my current location",
+            "tell me my current location",
+            "what city am i in",
+            "what city am i currently in",
+            "what area am i in",
+            "what area am i currently in",
+            "where are we",
+            "where are we at",
+            "i'm lost where am i",
+            "im lost where am i",
+            "i am lost where am i",
+            "glitch where am i",
+        }
+
+        return (
+            lowered in phrases
+            or
+            lowered.startswith(
+                "where am i "
+            )
+            or
+            (
+                "lost"
+                in lowered
+                and
+                "where"
+                in lowered
+            )
         )
 
 
@@ -438,7 +549,6 @@ class WeatherQueryController:
             .lower()
         )
 
-
         followup_phrases = [
             "what about tomorrow",
             "how about tomorrow",
@@ -446,7 +556,6 @@ class WeatherQueryController:
             "what about today",
             "how about today",
         ]
-
 
         weather_words = [
             "weather",
@@ -463,8 +572,11 @@ class WeatherQueryController:
             "outside",
         ]
 
-
         return (
+            self._is_location_query(
+                command
+            )
+            or
             any(
                 word in lowered
                 for word in weather_words
@@ -488,7 +600,6 @@ class WeatherQueryController:
             .lower()
         )
 
-
         if any(
             word in lowered
             for word in [
@@ -498,9 +609,7 @@ class WeatherQueryController:
                 "thunderstorm",
             ]
         ):
-
             return "PRECIPITATION"
-
 
         if any(
             word in lowered
@@ -510,19 +619,13 @@ class WeatherQueryController:
                 "cold",
             ]
         ):
-
             return "TEMPERATURE"
 
-
         if "humidity" in lowered:
-
             return "HUMIDITY"
 
-
         if "wind" in lowered:
-
             return "WIND"
-
 
         return "FORECAST"
 
@@ -536,11 +639,9 @@ class WeatherQueryController:
             command.strip()
         )
 
-
         lowered = (
             original.lower()
         )
-
 
         followup_phrases = [
             "what about tomorrow",
@@ -550,13 +651,11 @@ class WeatherQueryController:
             "how about today",
         ]
 
-
         is_followup = (
             lowered in followup_phrases
             and self.last_weather_state
             is not None
         )
-
 
         if not self.can_handle(
             original
@@ -568,24 +667,81 @@ class WeatherQueryController:
             }
 
 
+        # Pure location query:
+        # "Where am I?", "I'm lost, where am I?", etc.
+        if self._is_location_query(
+            original
+        ):
+
+            if self.location_service is None:
+
+                return {
+                    "handled":
+                        True,
+
+                    "message":
+                        (
+                            "My location service is not available."
+                        ),
+                }
+
+
+            try:
+
+                result = (
+                    self.location_service
+                    .describe_current_location()
+                )
+
+            except Exception as error:
+
+                return {
+                    "handled":
+                        True,
+
+                    "message":
+                        (
+                            "I couldn't determine your current "
+                            f"location. {error}"
+                        ),
+                }
+
+
+            return {
+                "handled":
+                    True,
+
+                "message":
+                    result.get(
+                        "message",
+                        (
+                            "I couldn't determine your "
+                            "current location."
+                        )
+                    ),
+
+                "location_result":
+                    result,
+            }
+
+
         location = (
             self._location_for_command(
                 original
             )
         )
 
-
         if not location:
 
             return {
                 "handled": True,
                 "message": (
-                    "I couldn't determine your current location yet. "
-                    "Make sure Windows Location Services are enabled, "
-                    "or ask me about a specific city."
+                    "I couldn't determine your area automatically. "
+                    "Windows location and the approximate network-location "
+                    "fallback were unavailable. You can also ask me about "
+                    "a specific city or set a default weather location."
                 ),
             }
-
 
         try:
 
@@ -609,7 +765,6 @@ class WeatherQueryController:
                     )
                 )
 
-
         except Exception as error:
 
             return {
@@ -620,25 +775,21 @@ class WeatherQueryController:
                 ),
             }
 
-
         if location["type"] == "NAMED":
 
             self.last_location = (
                 location["value"]
             )
 
-
         self.last_weather_state = (
             state
         )
-
 
         day_index = (
             self._day_index(
                 lowered
             )
         )
-
 
         if any(
             word in lowered
@@ -657,7 +808,6 @@ class WeatherQueryController:
                 )
             )
 
-
         elif (
             "tomorrow" in lowered
             or is_followup
@@ -670,7 +820,6 @@ class WeatherQueryController:
                 )
             )
 
-
         elif "humidity" in lowered:
 
             message = (
@@ -678,14 +827,12 @@ class WeatherQueryController:
                 f"{state.humidity_percent:.0f} percent."
             )
 
-
         elif "wind" in lowered:
 
             message = (
                 f"Winds in {state.location_name} are currently around "
                 f"{state.wind_speed_mph:.0f} miles per hour."
             )
-
 
         elif any(
             word in lowered
@@ -701,7 +848,6 @@ class WeatherQueryController:
                     day_index
                 )
             )
-
 
             if (
                 day is not None
@@ -723,7 +869,6 @@ class WeatherQueryController:
                     f"{state.apparent_temperature_f:.0f}."
                 )
 
-
         elif "forecast" in lowered:
 
             message = (
@@ -733,7 +878,6 @@ class WeatherQueryController:
                 )
             )
 
-
         else:
 
             message = (
@@ -741,7 +885,6 @@ class WeatherQueryController:
                     state
                 )
             )
-
 
         return {
             "handled": True,

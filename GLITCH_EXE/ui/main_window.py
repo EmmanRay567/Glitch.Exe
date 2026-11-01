@@ -1,5 +1,6 @@
 import os
 import json
+import math
 import time
 from pathlib import Path
 
@@ -27,8 +28,10 @@ from PySide6.QtCore import (
     Signal,
     QObject,
     QTimer,
+    QPoint,
     QPointF,
     QRect,
+    QRectF,
     Qt,
     QUrl,
     QPropertyAnimation,
@@ -62,12 +65,20 @@ from controllers.system_query_controller import SystemQueryController
 from controllers.conversation_controller import ConversationController
 from controllers.context_controller import ContextController
 from controllers.weather_query_controller import WeatherQueryController
+from controllers.security_query_controller import SecurityQueryController
+from controllers.security_control_controller import SecurityControlController
 from services.application_service import ApplicationService
 from services.system_monitoring_service import SystemMonitoringService
 from services.system_power_service import SystemPowerService
 from services.weather_service import WeatherService
 from services.location_service import LocationService
 from services.adaptive_context_service import AdaptiveContextService
+from services.security_engine import SecurityEngine
+from services.auto_security_scan_service import AutoSecurityScanService
+from services.windows_security_telemetry_service import WindowsSecurityTelemetryService
+from services.auth_session import AuthSession
+from services.security_alert_service import SecurityAlertService
+from services.security_action_service import SecurityActionService
 
 from voice.voice_engine import VoiceEngine
 from voice.voice_listener import VoiceListener
@@ -78,13 +89,23 @@ from gestures.hand_tracker import (
 )
 
 from ui.reactor_widget import ReactorWidget
-from ui.sidebar import Sidebar
 from ui.status_panel import StatusPanel
 from ui.command_bar import CommandBar
 from ui.response_panel import ResponsePanel
+from ui.auth_overlay import AuthOverlay
+from ui.security_alert_overlay import SecurityAlertOverlay
+from ui.security_findings_overlay import SecurityFindingsOverlay
 
 # NEW
 from ui.system_matrix_widget import SystemMatrixWidget
+from ui.security_matrix_widget import SecurityMatrixWidget
+from ui.hud_effects import (
+    HudTransitionOverlay,
+    HandHologramOverlay,
+    HoloNavRail,
+    HoloProjector,
+    PAGE_TITLES,
+)
 
 
 # =========================================================
@@ -96,11 +117,15 @@ class AIWorker(QObject):
     finished = Signal(str)
     error = Signal(str)
 
+    # Pieces of the reply while it is being written (streaming mode).
+    partial = Signal(str)
+
     def __init__(
         self,
         assistant,
         message,
-        mode="CHAT"
+        mode="CHAT",
+        stream=False
     ):
 
         super().__init__()
@@ -108,6 +133,7 @@ class AIWorker(QObject):
         self.assistant = assistant
         self.message = message
         self.mode = mode
+        self.stream = stream
 
 
     def run(self):
@@ -121,6 +147,24 @@ class AIWorker(QObject):
                     .search_web(
                         self.message
                     )
+                )
+
+            elif (
+                self.stream
+                and hasattr(self.assistant, "ask_stream")
+            ):
+
+                # Speak while the reply is still being written.
+                for delta in self.assistant.ask_stream(
+                    self.message
+                ):
+
+                    self.partial.emit(
+                        delta
+                    )
+
+                response = (
+                    self.assistant.last_reply
                 )
 
             else:
@@ -192,6 +236,111 @@ class WeatherWorker(QObject):
                 str(
                     error
                 )
+            )
+
+
+# =========================================================
+# SECURITY SCAN WORKER
+# =========================================================
+
+class SecurityScanWorker(QObject):
+
+    finished = Signal(object)
+    error = Signal(str)
+
+    def __init__(
+        self,
+        security_engine,
+        target,
+        recursive=True,
+        max_files=5000
+    ):
+
+        super().__init__()
+
+        self.security_engine = (
+            security_engine
+        )
+
+        self.target = (
+            target
+        )
+
+        self.recursive = (
+            recursive
+        )
+
+        self.max_files = (
+            max_files
+        )
+
+
+    def run(
+        self
+    ):
+
+        try:
+
+            results = (
+                self.security_engine
+                .scan_directory(
+                    self.target,
+                    recursive=self.recursive,
+                    max_files=self.max_files
+                )
+            )
+
+            self.finished.emit(
+                results
+            )
+
+        except Exception as error:
+
+            self.error.emit(
+                str(error)
+            )
+
+
+# =========================================================
+# WINDOWS SECURITY TELEMETRY WORKER
+# =========================================================
+
+class WindowsSecurityTelemetryWorker(QObject):
+
+    finished = Signal(object)
+    error = Signal(str)
+
+    def __init__(
+        self,
+        telemetry_service
+    ):
+
+        super().__init__()
+
+        self.telemetry_service = (
+            telemetry_service
+        )
+
+
+    def run(
+        self
+    ):
+
+        try:
+
+            snapshot = (
+                self.telemetry_service
+                .collect_snapshot()
+            )
+
+            self.finished.emit(
+                snapshot
+            )
+
+        except Exception as error:
+
+            self.error.emit(
+                str(error)
             )
 
 
@@ -569,6 +718,86 @@ class GlitchWindow(QMainWindow):
         )
 
 
+        # Lets GLITCH's quick spoken lines know your preferred form of
+        # address and log what it just did for the AI to refer back to.
+        self.conversation_controller.attach_context(
+            self.adaptive_context_service
+        )
+
+
+        # =================================================
+        # PHASE 3 SECURITY ENGINE
+        # =================================================
+
+        self.security_engine = (
+            SecurityEngine()
+        )
+
+
+        self.windows_security_telemetry_service = (
+            WindowsSecurityTelemetryService()
+        )
+
+
+        self.security_query_controller = (
+            SecurityQueryController(
+                self.security_engine
+            )
+        )
+
+
+        self.security_control_controller = (
+            SecurityControlController()
+        )
+
+        self.security_action_service = (
+            SecurityActionService(
+                self.security_engine
+            )
+        )
+
+        self.pending_security_action = None
+
+
+        self.auto_security_scan_service = (
+            AutoSecurityScanService(
+                self.security_engine,
+                scan_targets=[
+                    Path.home()
+                    / "Downloads"
+                ],
+                idle_seconds=120,
+                poll_seconds=15,
+                max_files_per_pass=150,
+            )
+        )
+
+
+        self.auto_security_scan_service.start()
+
+
+        self.security_thread = None
+        self.security_worker = None
+        self.security_should_speak = False
+
+
+        self.windows_security_thread = None
+        self.windows_security_worker = None
+
+
+        self.windows_security_timer = QTimer(
+            self
+        )
+
+        self.windows_security_timer.timeout.connect(
+            self.start_windows_security_refresh
+        )
+
+        self.windows_security_timer.start(
+            30000
+        )
+
+
         # =================================================
         # WEATHER INTELLIGENCE
         # =================================================
@@ -602,6 +831,11 @@ class GlitchWindow(QMainWindow):
         self.weather_thread = None
         self.weather_worker = None
         self.weather_should_speak = False
+
+        # Tracks what the shared weather/location worker
+        # is currently doing so the HUD can show the
+        # correct live status.
+        self.weather_request_mode = "WEATHER"
 
 
         # =================================================
@@ -939,13 +1173,28 @@ class GlitchWindow(QMainWindow):
 
 
         # =================================================
-        # SIDEBAR
+        # HOLOGRAPHIC NAVIGATION (replaces the old sidebar)
         # =================================================
 
-        self.sidebar = (
-            Sidebar(
+        self.holo_nav = (
+            HoloNavRail(
                 self.central_widget
             )
+        )
+
+        # Compatibility alias: older code still refers to
+        # self.sidebar.home_button, self.sidebar.chat_button, ...
+        self.sidebar = self.holo_nav
+
+
+        self.holo_projector = (
+            HoloProjector(
+                self.central_widget
+            )
+        )
+
+        self.holo_nav.hovered.connect(
+            self.holo_projector.preview
         )
 
 
@@ -1090,6 +1339,49 @@ class GlitchWindow(QMainWindow):
         )
 
 
+        # PHASE 3 SECURITY MATRIX
+        # Visual shell first; live security telemetry is
+        # connected in the next Phase 3 step.
+        self.security_matrix_page = (
+            SecurityMatrixWidget(
+                self.security_engine
+            )
+        )
+
+
+        # =================================================
+        # PHASE 3 SECURITY ALERT INTELLIGENCE
+        # =================================================
+
+        self.security_alert_service = (
+            SecurityAlertService()
+        )
+
+        self.security_alert_queue = []
+        self.security_alert_active = False
+
+        # Existing unresolved findings are restored by the
+        # Security Matrix, but they are silently primed here
+        # so GLITCH does not repeat old voice/HUD alerts
+        # every time the assistant starts.
+        try:
+
+            self.security_alert_service.prime(
+                self.security_matrix_page
+                .get_active_security_findings()
+            )
+
+        except Exception:
+
+            pass
+
+
+        QTimer.singleShot(
+            1200,
+            self.start_windows_security_refresh
+        )
+
+
         self.chat_page = (
             self.build_chat_page()
         )
@@ -1125,6 +1417,8 @@ class GlitchWindow(QMainWindow):
             self.home_page,
 
             self.system_matrix_page,
+
+            self.security_matrix_page,
 
             self.chat_page,
 
@@ -1182,70 +1476,142 @@ class GlitchWindow(QMainWindow):
 
 
         # =================================================
-        # SIDEBAR CONNECTIONS
+        # JARVIS HUD EFFECTS
         # =================================================
 
-        self.sidebar.home_button.clicked.connect(
-            lambda checked=False:
-                self.navigate_with_intent(
-                    "HOME",
-                    "MOUSE"
-                )
+        self.hand_overlay = (
+            HandHologramOverlay(
+                self.central_widget
+            )
+        )
+
+        self.transition_overlay = (
+            HudTransitionOverlay(
+                self.central_widget
+            )
+        )
+
+        self.security_alert_overlay = (
+            SecurityAlertOverlay(
+                self.central_widget
+            )
+        )
+
+        self.security_alert_overlay.alert_finished.connect(
+            self.handle_security_alert_finished
         )
 
 
-        self.sidebar.chat_button.clicked.connect(
-            lambda checked=False:
-                self.navigate_with_intent(
-                    "CHAT",
-                    "MOUSE"
-                )
+        self.security_findings_overlay = (
+            SecurityFindingsOverlay(
+                self.central_widget
+            )
+        )
+
+        self.security_findings_overlay.closed.connect(
+            self.handle_security_findings_closed
+        )
+
+        # Direction of the swipe that triggered the current
+        # navigation:
+        #  1 = sweep left -> right
+        # -1 = sweep right -> left
+        #  0 = non-swipe navigation
+        self.pending_sweep_direction = 0
+
+        self.pending_sweep_vertical = False
+
+
+        # =================================================
+        # FACE-ONLY SECURITY GATE
+        # =================================================
+
+        # Camera / face verification is the only biometric factor.
+        # Voice biometrics are intentionally not used.
+        self.authenticated = False
+        self._authenticated_systems_started = False
+        self._face_unlock_in_progress = False
+
+
+        self.auth_session = (
+            AuthSession(
+                self.data_dir,
+                self
+            )
         )
 
 
-        self.sidebar.create_button.clicked.connect(
-            lambda checked=False:
-                self.navigate_with_intent(
-                    "CREATE",
-                    "MOUSE"
-                )
+        self.auth_overlay = (
+            AuthOverlay(
+                self.central_widget
+            )
         )
 
 
-        self.sidebar.search_button.clicked.connect(
-            lambda checked=False:
-                self.navigate_with_intent(
-                    "SEARCH",
-                    "MOUSE"
-                )
+        # Face-only UI wiring.
+        self.auth_session.stage_changed.connect(
+            self.auth_overlay.set_stage
+        )
+
+        self.auth_session.preview_frame.connect(
+            self.auth_overlay.set_preview
+        )
+
+        self.auth_session.face_status.connect(
+            self.auth_overlay.set_face_status
+        )
+
+        # Watch the face status directly so GLITCH unlocks as soon
+        # as the camera verification succeeds, before any legacy
+        # voice-biometric stage can begin.
+        self.auth_session.face_status.connect(
+            self.handle_face_auth_status
+        )
+
+        # Some AuthSession builds expose a generic factor result.
+        # We listen only to identify a successful FACE result.
+        self.auth_session.factor_result.connect(
+            self.handle_face_factor_result
+        )
+
+        # The AuthSession is the authority for successful authentication.
+        # When the face scan passes, it emits granted(AuthResult).
+        self.auth_session.granted.connect(
+            self.handle_auth_granted
+        )
+
+        self.auth_session.denied.connect(
+            self.handle_auth_denied
+        )
+
+        self.auth_session.lockdown.connect(
+            self.auth_overlay.show_lockdown
+        )
+
+        self.auth_overlay.retry_requested.connect(
+            self.start_authentication
+        )
+
+        self.auth_overlay.unlock_finished.connect(
+            self.finish_unlock
         )
 
 
-        self.sidebar.code_button.clicked.connect(
-            lambda checked=False:
-                self.navigate_with_intent(
-                    "CODE",
-                    "MOUSE"
-                )
-        )
+        # =================================================
+        # HOLO NAV CONNECTIONS
+        # =================================================
 
+        for nav_key, nav_button in (
+            self.holo_nav.buttons.items()
+        ):
 
-        self.sidebar.apps_button.clicked.connect(
-            lambda checked=False:
-                self.navigate_with_intent(
-                    "APPS",
-                    "MOUSE"
-                )
-        )
-
-
-        self.sidebar.settings_button.clicked.connect(
-            lambda checked=False:
-                self.navigate_with_intent(
-                    "SETTINGS",
-                    "MOUSE"
-                )
-        )
+            nav_button.clicked.connect(
+                lambda checked=False, key=nav_key:
+                    self.navigate_with_intent(
+                        key,
+                        "MOUSE"
+                    )
+            )
 
 
         # =================================================
@@ -1268,6 +1634,17 @@ class GlitchWindow(QMainWindow):
 
         self.voice_engine.speech_finished.connect(
             self.handle_voice_finished
+        )
+
+
+        # Full-duplex voice: the mic stays open while GLITCH talks and
+        # you can interrupt it just by speaking.
+        self.voice_listener.set_echo_reference(
+            self.voice_engine.output_level
+        )
+
+        self.voice_listener.barge_in.connect(
+            self.handle_barge_in
         )
 
 
@@ -1304,17 +1681,42 @@ class GlitchWindow(QMainWindow):
         # HAND CONNECTIONS
         # =================================================
 
+        # The old laggy finger_cursor widget stays disconnected.
+        # Instead, the hand overlay draws a lightweight holographic
+        # pointer on the index fingertip, highlights the HUD button
+        # it is aiming at, and a pinch clicks that button.
+
         self.hand_tracker.finger_moved.connect(
-            self.handle_finger_move
+            self.handle_finger_hover
         )
 
+        self.hand_tracker.hand_lost.connect(
+            self.clear_finger_hover
+        )
 
         self.hand_tracker.pinch_detected.connect(
-            self.handle_proximity_touch
+            self.handle_hud_pinch
         )
 
 
-        # NEW SWIPE CONNECTIONS
+        self.hand_tracker.landmarks_updated.connect(
+            self.hand_overlay.set_landmarks
+        )
+
+        self.hand_tracker.hand_lost.connect(
+            self.hand_overlay.clear_hand
+        )
+
+        self.hand_tracker.swipe_charge.connect(
+            self.hand_overlay.set_swipe_charge
+        )
+
+        self.hand_tracker.pinch_detected.connect(
+            self.hand_overlay.flash_pinch
+        )
+
+
+        # SWIPE CONNECTIONS
         self.hand_tracker.swipe_left.connect(
             self.handle_swipe_left
         )
@@ -1322,6 +1724,21 @@ class GlitchWindow(QMainWindow):
 
         self.hand_tracker.swipe_right.connect(
             self.handle_swipe_right
+        )
+
+
+        # Vertical swipes move between sections
+        # (HOME, CHAT, CREATE, SEARCH, CODE, APPS, SETTINGS).
+        self.hand_tracker.swipe_up.connect(
+            self.handle_swipe_up
+        )
+
+        self.hand_tracker.swipe_down.connect(
+            self.handle_swipe_down
+        )
+
+        self.hand_tracker.swipe_charge_vertical.connect(
+            self.hand_overlay.set_swipe_charge_vertical
         )
 
 
@@ -1413,6 +1830,11 @@ class GlitchWindow(QMainWindow):
         )
 
 
+        self.holo_projector.set_active(
+            "HOME"
+        )
+
+
         self.response_panel.set_response(
             "GLITCH.EXE ONLINE // SYSTEMS NOMINAL"
         )
@@ -1428,32 +1850,12 @@ class GlitchWindow(QMainWindow):
 
 
         # =================================================
-        # STARTUP
+        # STARTUP // FACE-ONLY SECURE BOOT
         # =================================================
 
         QTimer.singleShot(
-            500,
-            self.startup_greeting
-        )
-
-
-        QTimer.singleShot(
-            1500,
-            self.start_hand_tracking
-        )
-
-
-        QTimer.singleShot(
-            3000,
-            self.start_voice_listener
-        )
-
-
-        # Windows requires the first location permission request
-        # to originate from the foreground UI thread.
-        QTimer.singleShot(
-            4500,
-            self.initialize_location_access
+            250,
+            self.start_authentication
         )
 
 
@@ -2876,6 +3278,15 @@ class GlitchWindow(QMainWindow):
 
     def start_voice_listener(self):
 
+        if not self.authenticated:
+
+            self.set_voice_input_status(
+                "LOCKED"
+            )
+
+            return
+
+
         if self.voice_output_active:
 
             self.set_voice_input_status(
@@ -3101,6 +3512,14 @@ class GlitchWindow(QMainWindow):
         transcript
     ):
 
+        if hasattr(
+            self,
+            "auto_security_scan_service"
+        ):
+
+            self.auto_security_scan_service.notify_glitch_activity()
+
+
         # Interrupt commands must be processed even while
         # GLITCH is actively speaking.
         if self.is_speech_interrupt_command(
@@ -3231,9 +3650,28 @@ class GlitchWindow(QMainWindow):
 
         if not command:
 
-            self.say_confirmation(
-                "Yeah?"
+            # Just the wake word: greet in character. Spoken directly
+            # so it isn't wrapped in a command acknowledgement.
+            wake_line = (
+                self.conversation_controller
+                .wake_response()
             )
+
+            self.response_panel.set_response(
+                wake_line
+            )
+
+            if self.voice_enabled:
+
+                self.voice_engine.speak(
+                    wake_line
+                )
+
+            else:
+
+                self.set_voice_input_status(
+                    "LISTENING"
+                )
 
             return
 
@@ -3285,6 +3723,13 @@ class GlitchWindow(QMainWindow):
             .resolve(
                 command
             )
+        )
+
+
+        # Spoken turns feed the same adaptive context as typed ones
+        # (mood, preferences, how to address you).
+        self.adaptive_context_service.observe_user(
+            command
         )
 
 
@@ -3367,6 +3812,74 @@ class GlitchWindow(QMainWindow):
             self.say_confirmation(
                 message
             )
+
+
+            return
+
+
+        # =================================================
+        # PHASE 3 SECURITY CONTROL
+        # =================================================
+
+        if self.handle_security_control_command(
+            command,
+            speak=True
+        ):
+            return
+
+        # =================================================
+        # GLITCH SECURITY ENGINE
+        # =================================================
+
+        security_result = (
+            self.security_query_controller
+            .parse(
+                command
+            )
+        )
+
+
+        if security_result[
+            "handled"
+        ]:
+
+            action = (
+                security_result[
+                    "action"
+                ]
+            )
+
+
+            if action == "SCAN_DIRECTORY":
+
+                self.start_security_scan(
+                    security_result[
+                        "target"
+                    ],
+                    speak_response=True
+                )
+
+            else:
+
+                message = (
+                    security_result[
+                        "message"
+                    ]
+                    or "Security command processed."
+                )
+
+
+                self.response_panel.set_response(
+                    f"SECURITY // {message}"
+                )
+
+
+                self.security_matrix_page.refresh_security_state()
+
+
+                self.say_confirmation(
+                    message
+                )
 
 
             return
@@ -4549,9 +5062,20 @@ class GlitchWindow(QMainWindow):
             and self.weather_thread.isRunning()
         ):
 
-            self.response_panel.set_response(
-                "WEATHER // REQUEST ALREADY IN PROGRESS..."
-            )
+            if (
+                self.weather_request_mode
+                == "LOCATION"
+            ):
+
+                self.response_panel.set_response(
+                    "LOCATION // REQUEST ALREADY IN PROGRESS..."
+                )
+
+            else:
+
+                self.response_panel.set_response(
+                    "WEATHER // REQUEST ALREADY IN PROGRESS..."
+                )
 
             return
 
@@ -4561,10 +5085,124 @@ class GlitchWindow(QMainWindow):
         )
 
 
-        self.response_panel.set_response(
-            "WEATHER // CHECKING LIVE FORECAST..."
-        )
+        # =================================================
+        # DETERMINE REQUEST TYPE
+        # =================================================
 
+        is_location_request = False
+
+        try:
+
+            location_query_checker = getattr(
+                self.weather_query_controller,
+                "_is_location_query",
+                None
+            )
+
+            if callable(
+                location_query_checker
+            ):
+
+                is_location_request = bool(
+                    location_query_checker(
+                        command
+                    )
+                )
+
+        except Exception:
+
+            is_location_request = False
+
+
+        # Defensive fallback in case the controller is ever
+        # swapped for an older build that does not expose
+        # _is_location_query().
+        if not is_location_request:
+
+            lowered_command = (
+                str(
+                    command
+                    or ""
+                )
+                .strip()
+                .lower()
+            )
+
+            location_phrases = (
+                "where am i",
+                "where am i at",
+                "where am i currently",
+                "where am i currently at",
+                "what is my current location",
+                "what's my current location",
+                "whats my current location",
+                "tell me my current location",
+                "what city am i in",
+                "what area am i in",
+                "where are we",
+                "i'm lost where am i",
+                "im lost where am i",
+                "i am lost where am i",
+            )
+
+            is_location_request = (
+                any(
+                    phrase in lowered_command
+                    for phrase in location_phrases
+                )
+                or
+                (
+                    "lost"
+                    in lowered_command
+                    and
+                    "where"
+                    in lowered_command
+                )
+            )
+
+
+        # =================================================
+        # LIVE HUD STATUS
+        # =================================================
+
+        if is_location_request:
+
+            self.weather_request_mode = (
+                "LOCATION"
+            )
+
+            self.response_panel.set_response(
+                "LOCATION // CHECKING LOCATION..."
+            )
+
+        else:
+
+            self.weather_request_mode = (
+                "WEATHER"
+            )
+
+            self.response_panel.set_response(
+                "WEATHER // CHECKING LIVE FORECAST..."
+            )
+
+
+        # Small reactor response while live information
+        # is being retrieved.
+        try:
+
+            self.reactor.trigger_glitch(
+                0.30,
+                5
+            )
+
+        except Exception:
+
+            pass
+
+
+        # =================================================
+        # BACKGROUND WORKER
+        # =================================================
 
         self.weather_thread = (
             QThread()
@@ -4637,23 +5275,81 @@ class GlitchWindow(QMainWindow):
         result
     ):
 
+        is_location_result = (
+            self.weather_request_mode
+            == "LOCATION"
+            or
+            (
+                isinstance(
+                    result,
+                    dict
+                )
+                and
+                "location_result"
+                in result
+            )
+        )
+
+
         message = (
             result.get(
                 "message"
             )
-            or "Weather data unavailable."
+            if isinstance(
+                result,
+                dict
+            )
+            else None
         )
 
 
-        self.response_panel.set_response(
-            f"WEATHER // {message}"
-        )
+        if not message:
+
+            message = (
+                "Location data unavailable."
+                if is_location_result
+                else "Weather data unavailable."
+            )
 
 
-        self.context_controller.remember_weather_result(
-            result
-        )
+        # =================================================
+        # LOCATION RESULT
+        # =================================================
 
+        if is_location_result:
+
+            self.response_panel.set_response(
+                f"LOCATION // {message}"
+            )
+
+
+        # =================================================
+        # WEATHER RESULT
+        # =================================================
+
+        else:
+
+            self.response_panel.set_response(
+                f"WEATHER // {message}"
+            )
+
+
+            # Only actual weather responses should affect
+            # weather conversation context.
+            try:
+
+                self.context_controller.remember_weather_result(
+                    result
+                )
+
+            except Exception:
+
+                pass
+
+
+        # =================================================
+        # VOICE RESPONSE
+        # =================================================
 
         if (
             self.weather_should_speak
@@ -4665,12 +5361,14 @@ class GlitchWindow(QMainWindow):
             )
 
 
+        # Keep the wake-once conversational session alive.
         if (
             hasattr(
                 self,
                 "conversation_controller"
             )
-            and self.conversation_controller.is_active()
+            and
+            self.conversation_controller.is_active()
         ):
 
             self.conversation_controller.touch()
@@ -4681,15 +5379,1120 @@ class GlitchWindow(QMainWindow):
         error
     ):
 
-        self.response_panel.set_response(
-            f"WEATHER ERROR // {error}"
-        )
+        if (
+            self.weather_request_mode
+            == "LOCATION"
+        ):
+
+            self.response_panel.set_response(
+                f"LOCATION ERROR // {error}"
+            )
+
+        else:
+
+            self.response_panel.set_response(
+                f"WEATHER ERROR // {error}"
+            )
 
 
-    def cleanup_weather_thread(self):
+    def cleanup_weather_thread(
+        self
+    ):
 
         self.weather_thread = None
         self.weather_worker = None
+
+        self.weather_request_mode = (
+            "WEATHER"
+        )
+
+
+    # =====================================================
+    # PHASE 3 SECURITY CONTROL / FINDINGS
+    # =====================================================
+
+    def _security_findings(
+        self
+    ):
+
+        return (
+            self.security_matrix_page
+            .get_active_security_findings()
+        )
+
+
+    def _resolve_finding_index(
+        self,
+        requested_index
+    ):
+
+        findings = self._security_findings()
+
+        if requested_index is None:
+
+            if len(findings) == 1:
+                return 1, findings[0], None
+
+            if not findings:
+                return None, None, "There are no active security findings."
+
+            return (
+                None,
+                None,
+                "There is more than one active finding. Say the finding number, for example finding 1."
+            )
+
+        try:
+            index = int(
+                requested_index
+            )
+        except (TypeError, ValueError):
+            return None, None, "That finding number is invalid."
+
+        if index < 1 or index > len(findings):
+            return (
+                None,
+                None,
+                f"Finding {index} does not exist. There are {len(findings)} active findings."
+            )
+
+        return index, findings[index - 1], None
+
+
+    def show_security_findings(
+        self,
+        selected_index=None
+    ):
+
+        findings = self._security_findings()
+        history = (
+            self.security_matrix_page
+            .recent_security_events(
+                limit=12
+            )
+        )
+
+        self.security_findings_overlay.setGeometry(
+            self.central_widget.rect()
+        )
+
+        self.security_findings_overlay.show_findings(
+            findings,
+            history,
+            selected_index=selected_index
+        )
+
+        return len(findings)
+
+
+    def handle_security_findings_closed(
+        self
+    ):
+
+        self.response_panel.set_response(
+            "SECURITY FINDINGS // CLOSED"
+        )
+
+
+    def _security_control_response(
+        self,
+        message,
+        speak=False
+    ):
+
+        self.response_panel.set_response(
+            f"SECURITY // {message}"
+        )
+
+        if speak:
+            self.say_confirmation(
+                message
+            )
+
+
+    def _prepare_security_action(
+        self,
+        action,
+        index,
+        finding,
+        speak=False
+    ):
+
+        process_name = str(
+            finding.get(
+                "process_name",
+                "UNKNOWN"
+            )
+            or "UNKNOWN"
+        )
+
+        risk_score = int(
+            finding.get(
+                "risk_score",
+                0
+            )
+            or 0
+        )
+
+        action_words = {
+            "QUARANTINE": "quarantine the executable file",
+            "TERMINATE": "terminate the running process",
+            "BLOCK": "block outbound network access",
+        }
+
+        description = action_words.get(
+            action,
+            action.lower()
+        )
+
+        self.pending_security_action = {
+            "action": action,
+            "index": index,
+            "finding": dict(
+                finding
+            ),
+            "created_at": time.time(),
+        }
+
+        message = (
+            f"Confirmation required. Finding {index} is {process_name}, "
+            f"risk score {risk_score}. I am ready to {description}. "
+            "Say confirm to proceed or cancel to abort."
+        )
+
+        self._security_control_response(
+            message,
+            speak=speak
+        )
+
+
+    def _cancel_security_action(
+        self,
+        speak=False
+    ):
+
+        if self.pending_security_action is None:
+            message = "There is no pending security action."
+        else:
+            self.pending_security_action = None
+            message = "Pending security action cancelled."
+
+        self._security_control_response(
+            message,
+            speak=speak
+        )
+
+
+    def _confirm_security_action(
+        self,
+        speak=False
+    ):
+
+        pending = self.pending_security_action
+
+        if pending is None:
+            self._security_control_response(
+                "There is no pending security action to confirm.",
+                speak=speak
+            )
+            return
+
+        if (
+            time.time()
+            - float(
+                pending.get(
+                    "created_at",
+                    0
+                )
+            )
+            > 90
+        ):
+            self.pending_security_action = None
+            self._security_control_response(
+                "That security confirmation expired. Request the action again.",
+                speak=speak
+            )
+            return
+
+        action = pending[
+            "action"
+        ]
+        finding = pending[
+            "finding"
+        ]
+        index = pending[
+            "index"
+        ]
+
+        self.pending_security_action = None
+
+        if action == "QUARANTINE":
+            result = (
+                self.security_action_service
+                .quarantine_finding(
+                    finding
+                )
+            )
+
+        elif action == "TERMINATE":
+            result = (
+                self.security_action_service
+                .terminate_finding(
+                    finding
+                )
+            )
+
+        elif action == "BLOCK":
+            result = (
+                self.security_action_service
+                .block_finding(
+                    finding
+                )
+            )
+
+        else:
+            result = {
+                "success": False,
+                "message": "Unknown security action.",
+            }
+
+        success = bool(
+            result.get(
+                "success"
+            )
+        )
+        message = str(
+            result.get(
+                "message"
+            )
+            or "Security action completed."
+        )
+
+        self.security_matrix_page.record_security_control_event(
+            action,
+            finding,
+            success,
+            message
+        )
+
+        if success:
+            finding_key = finding.get(
+                "finding_key"
+            )
+
+            if finding_key:
+                self.security_matrix_page.resolve_security_finding(
+                    finding_key,
+                    note=(
+                        f"{action} confirmed by 404. {message}"
+                    )
+                )
+
+                try:
+                    self.security_alert_service.forget(
+                        finding_key
+                    )
+                except Exception:
+                    pass
+
+            message = (
+                f"Confirmed action completed for finding {index}. "
+                + message
+            )
+
+        self._security_control_response(
+            message,
+            speak=speak
+        )
+
+        self.show_security_findings()
+
+
+    def handle_security_control_command(
+        self,
+        command,
+        speak=False
+    ):
+
+        result = (
+            self.security_control_controller
+            .parse(
+                command
+            )
+        )
+
+        if not result.get(
+            "handled"
+        ):
+            return False
+
+        action = result.get(
+            "action"
+        )
+        requested_index = result.get(
+            "index"
+        )
+
+        if action == "SHOW_FINDINGS":
+            count = self.show_security_findings()
+            self._security_control_response(
+                f"Showing {count} active security findings.",
+                speak=speak
+            )
+            return True
+
+        if action == "SHOW_HISTORY":
+            self.show_security_findings()
+            events = (
+                self.security_matrix_page
+                .recent_security_events(
+                    limit=25
+                )
+            )
+            self._security_control_response(
+                f"Showing security history. I have {len(events)} recent events stored.",
+                speak=speak
+            )
+            return True
+
+        if action == "CLOSE_FINDINGS":
+            self.security_findings_overlay.hide()
+            self._security_control_response(
+                "Security findings closed.",
+                speak=speak
+            )
+            return True
+
+        if action == "MOST_SUSPICIOUS":
+            findings = self._security_findings()
+
+            if not findings:
+                message = "There are no active suspicious process findings."
+            else:
+                finding = findings[0]
+                name = finding.get(
+                    "process_name",
+                    "UNKNOWN"
+                )
+                severity = finding.get(
+                    "severity",
+                    "REVIEW"
+                )
+                score = finding.get(
+                    "risk_score",
+                    0
+                )
+                reasons = finding.get(
+                    "reasons",
+                    []
+                ) or []
+                reason = (
+                    reasons[0]
+                    if reasons
+                    else "No reason data available."
+                )
+                message = (
+                    f"The highest-risk active finding is {name}, "
+                    f"rated {severity} with score {score}. {reason}"
+                )
+                self.show_security_findings(
+                    selected_index=1
+                )
+
+            self._security_control_response(
+                message,
+                speak=speak
+            )
+            return True
+
+        if action == "CONFIRM":
+            self._confirm_security_action(
+                speak=speak
+            )
+            return True
+
+        if action == "CANCEL":
+            self._cancel_security_action(
+                speak=speak
+            )
+            return True
+
+        index, finding, error = (
+            self._resolve_finding_index(
+                requested_index
+            )
+        )
+
+        if error:
+            self._security_control_response(
+                error,
+                speak=speak
+            )
+            return True
+
+        if action == "SHOW_FINDING":
+            self.show_security_findings(
+                selected_index=index
+            )
+
+            reasons = finding.get(
+                "reasons",
+                []
+            ) or []
+            reason = (
+                reasons[0]
+                if reasons
+                else "No reason data available."
+            )
+
+            message = (
+                f"Finding {index}: {finding.get('process_name', 'UNKNOWN')}, "
+                f"{finding.get('severity', 'REVIEW')}, "
+                f"risk score {finding.get('risk_score', 0)}. {reason}"
+            )
+
+            self._security_control_response(
+                message,
+                speak=speak
+            )
+            return True
+
+        if action == "RESOLVE_FINDING":
+            finding_key = finding.get(
+                "finding_key"
+            )
+
+            if not finding_key:
+                message = "That finding does not have a persistent key."
+            else:
+                changed = (
+                    self.security_matrix_page
+                    .resolve_security_finding(
+                        finding_key,
+                        note="Manually resolved by 404."
+                    )
+                )
+
+                if changed:
+                    try:
+                        self.security_alert_service.forget(
+                            finding_key
+                        )
+                    except Exception:
+                        pass
+
+                    self.security_matrix_page.record_security_control_event(
+                        "RESOLVE",
+                        finding,
+                        True,
+                        "Manually resolved by 404."
+                    )
+
+                    message = f"Finding {index} has been marked resolved."
+                else:
+                    message = f"Finding {index} could not be resolved."
+
+            self._security_control_response(
+                message,
+                speak=speak
+            )
+            self.show_security_findings()
+            return True
+
+        if action == "REQUEST_QUARANTINE":
+            self._prepare_security_action(
+                "QUARANTINE",
+                index,
+                finding,
+                speak=speak
+            )
+            return True
+
+        if action == "REQUEST_TERMINATE":
+            self._prepare_security_action(
+                "TERMINATE",
+                index,
+                finding,
+                speak=speak
+            )
+            return True
+
+        if action == "REQUEST_BLOCK":
+            self._prepare_security_action(
+                "BLOCK",
+                index,
+                finding,
+                speak=speak
+            )
+            return True
+
+        return True
+
+
+    # =====================================================
+    # WINDOWS SECURITY TELEMETRY
+    # =====================================================
+
+    def start_windows_security_refresh(
+        self
+    ):
+
+        if (
+            self.windows_security_thread is not None
+            and self.windows_security_thread.isRunning()
+        ):
+
+            return
+
+
+        self.windows_security_thread = (
+            QThread()
+        )
+
+
+        self.windows_security_worker = (
+            WindowsSecurityTelemetryWorker(
+                self.windows_security_telemetry_service
+            )
+        )
+
+
+        self.windows_security_worker.moveToThread(
+            self.windows_security_thread
+        )
+
+
+        self.windows_security_thread.started.connect(
+            self.windows_security_worker.run
+        )
+
+
+        self.windows_security_worker.finished.connect(
+            self.handle_windows_security_snapshot
+        )
+
+
+        self.windows_security_worker.error.connect(
+            self.handle_windows_security_error
+        )
+
+
+        self.windows_security_worker.finished.connect(
+            self.windows_security_thread.quit
+        )
+
+
+        self.windows_security_worker.error.connect(
+            self.windows_security_thread.quit
+        )
+
+
+        self.windows_security_worker.finished.connect(
+            self.windows_security_worker.deleteLater
+        )
+
+
+        self.windows_security_worker.error.connect(
+            self.windows_security_worker.deleteLater
+        )
+
+
+        self.windows_security_thread.finished.connect(
+            self.windows_security_thread.deleteLater
+        )
+
+
+        self.windows_security_thread.finished.connect(
+            self.cleanup_windows_security_thread
+        )
+
+
+        self.windows_security_thread.start()
+
+
+    def handle_windows_security_snapshot(
+        self,
+        snapshot
+    ):
+
+        self.security_matrix_page.set_windows_security_telemetry(
+            snapshot
+        )
+
+        self.check_security_alerts()
+
+
+    # =====================================================
+    # PHASE 3 SECURITY ALERTS
+    # =====================================================
+
+    def check_security_alerts(
+        self
+    ):
+
+        try:
+
+            findings = (
+                self.security_matrix_page
+                .get_active_security_findings()
+            )
+
+            new_alerts = (
+                self.security_alert_service
+                .collect_new_alerts(
+                    findings
+                )
+            )
+
+        except Exception as error:
+
+            print(
+                "SECURITY ALERT CHECK ERROR:",
+                error
+            )
+
+            return
+
+
+        if not new_alerts:
+
+            return
+
+
+        self.security_alert_queue.extend(
+            new_alerts
+        )
+
+        self.show_next_security_alert()
+
+
+    def show_next_security_alert(
+        self
+    ):
+
+        if self.security_alert_active:
+
+            return
+
+
+        if not self.authenticated:
+
+            return
+
+
+        if not self.security_alert_queue:
+
+            return
+
+
+        finding = (
+            self.security_alert_queue
+            .pop(
+                0
+            )
+        )
+
+        severity = str(
+            finding.get(
+                "severity",
+                "REVIEW"
+            )
+            or "REVIEW"
+        ).upper()
+
+        process_name = str(
+            finding.get(
+                "process_name",
+                "UNKNOWN"
+            )
+            or "UNKNOWN"
+        )
+
+        risk_score = int(
+            finding.get(
+                "risk_score",
+                0
+            )
+            or 0
+        )
+
+        reasons = (
+            finding.get(
+                "reasons",
+                []
+            )
+            or []
+        )
+
+        reason = (
+            str(
+                reasons[0]
+            )
+            if reasons
+            else (
+                "Unusual process behavior requires review."
+            )
+        )
+
+
+        self.security_alert_active = True
+
+
+        self.security_alert_overlay.setGeometry(
+            self.central_widget.rect()
+        )
+
+        self.security_alert_overlay.show_alert(
+            severity,
+            process_name,
+            risk_score,
+            reason
+        )
+
+
+        if severity in {
+            "HIGH",
+            "CRITICAL",
+        }:
+
+            response = (
+                "SECURITY ALERT // HIGH RISK\n"
+                f"PROCESS // {process_name}\n"
+                f"RISK // {risk_score}\n"
+                f"ANALYSIS // {reason}"
+            )
+
+            glitch_intensity = 0.95
+            glitch_frames = 14
+
+            spoken = (
+                f"404, high-risk security activity was detected "
+                f"from {process_name}. "
+                "Review the Security Matrix."
+            )
+
+        elif severity in {
+            "SUSPICIOUS",
+            "WARNING",
+        }:
+
+            response = (
+                "SECURITY ALERT // SUSPICIOUS\n"
+                f"PROCESS // {process_name}\n"
+                f"RISK // {risk_score}\n"
+                f"ANALYSIS // {reason}"
+            )
+
+            glitch_intensity = 0.72
+            glitch_frames = 11
+
+            spoken = (
+                f"404, I detected unusual network activity "
+                f"from {process_name}. "
+                "Review the Security Matrix."
+            )
+
+        else:
+
+            response = (
+                "SECURITY NOTICE // REVIEW\n"
+                f"PROCESS // {process_name}\n"
+                f"RISK // {risk_score}\n"
+                f"ANALYSIS // {reason}"
+            )
+
+            glitch_intensity = 0.45
+            glitch_frames = 7
+
+            spoken = None
+
+
+        self.response_panel.set_response(
+            response
+        )
+
+
+        self.reactor.trigger_glitch(
+            glitch_intensity,
+            glitch_frames
+        )
+
+
+        # Voice only for SUSPICIOUS/HIGH alerts.
+        # REVIEW remains visual to avoid unnecessary interruptions.
+        if (
+            spoken
+            and self.voice_enabled
+            and not self.voice_output_active
+        ):
+
+            self.voice_engine.speak(
+                spoken
+            )
+
+
+    def handle_security_alert_finished(
+        self
+    ):
+
+        self.security_alert_active = False
+
+        if self.security_alert_queue:
+
+            QTimer.singleShot(
+                350,
+                self.show_next_security_alert
+            )
+
+
+    def handle_windows_security_error(
+        self,
+        error
+    ):
+
+        print(
+            "WINDOWS SECURITY TELEMETRY ERROR:",
+            error
+        )
+
+
+    def cleanup_windows_security_thread(
+        self
+    ):
+
+        self.windows_security_thread = None
+        self.windows_security_worker = None
+
+
+    # =====================================================
+    # SECURITY ENGINE
+    # =====================================================
+
+    def start_security_scan(
+        self,
+        target,
+        speak_response=False
+    ):
+
+        if (
+            self.security_thread is not None
+            and self.security_thread.isRunning()
+        ):
+
+            message = (
+                "A security scan is already running."
+            )
+
+            self.response_panel.set_response(
+                f"SECURITY // {message}"
+            )
+
+            if speak_response:
+                self.say_confirmation(
+                    message
+                )
+
+            return
+
+
+        self.security_should_speak = (
+            speak_response
+        )
+
+
+        self.response_panel.set_response(
+            (
+                "SECURITY // SCANNING\n"
+                f"TARGET // {target}"
+            )
+        )
+
+
+        self.security_matrix_page.core_status.setText(
+            "ANTIVIRUS SCAN // ACTIVE"
+        )
+
+
+        self.security_thread = (
+            QThread()
+        )
+
+
+        self.security_worker = (
+            SecurityScanWorker(
+                self.security_engine,
+                target
+            )
+        )
+
+
+        self.security_worker.moveToThread(
+            self.security_thread
+        )
+
+
+        self.security_thread.started.connect(
+            self.security_worker.run
+        )
+
+
+        self.security_worker.finished.connect(
+            self.handle_security_scan_finished
+        )
+
+
+        self.security_worker.error.connect(
+            self.handle_security_scan_error
+        )
+
+
+        self.security_worker.finished.connect(
+            self.security_thread.quit
+        )
+
+
+        self.security_worker.error.connect(
+            self.security_thread.quit
+        )
+
+
+        self.security_worker.finished.connect(
+            self.security_worker.deleteLater
+        )
+
+
+        self.security_worker.error.connect(
+            self.security_worker.deleteLater
+        )
+
+
+        self.security_thread.finished.connect(
+            self.security_thread.deleteLater
+        )
+
+
+        self.security_thread.finished.connect(
+            self.cleanup_security_thread
+        )
+
+
+        self.security_thread.start()
+
+
+    def handle_security_scan_finished(
+        self,
+        results
+    ):
+
+        total = len(
+            results
+        )
+
+
+        suspicious = [
+            result
+            for result in results
+            if result.suspicious
+        ]
+
+
+        errors = [
+            result
+            for result in results
+            if result.error
+        ]
+
+
+        state = (
+            self.security_engine
+            .state
+        )
+
+
+        self.security_matrix_page.refresh_security_state()
+
+
+        if suspicious:
+
+            preview = ", ".join(
+                result.file_name
+                for result
+                in suspicious[:3]
+            )
+
+            message = (
+                f"Scan complete. I scanned {total} files and "
+                f"flagged {len(suspicious)} for review. "
+                f"Highest security state is {state.security_status}. "
+                f"Recent flags include {preview}."
+            )
+
+        else:
+
+            message = (
+                f"Scan complete. I scanned {total} files and "
+                "did not flag any suspicious files."
+            )
+
+
+        if errors:
+
+            message += (
+                f" {len(errors)} files could not be scanned."
+            )
+
+
+        self.response_panel.set_response(
+            f"SECURITY // {message}"
+        )
+
+
+        self.security_matrix_page.core_status.setText(
+            "DEFENSIVE GRID // ONLINE"
+        )
+
+
+        if self.security_should_speak:
+
+            self.say_confirmation(
+                message
+            )
+
+
+    def handle_security_scan_error(
+        self,
+        error
+    ):
+
+        message = (
+            f"Security scan failed: {error}"
+        )
+
+
+        self.response_panel.set_response(
+            f"SECURITY ERROR // {error}"
+        )
+
+
+        self.security_matrix_page.core_status.setText(
+            "ANTIVIRUS SCAN // ERROR"
+        )
+
+
+        if self.security_should_speak:
+
+            self.say_confirmation(
+                message
+            )
+
+
+    def cleanup_security_thread(
+        self
+    ):
+
+        self.security_thread = None
+        self.security_worker = None
+        self.security_should_speak = False
 
 
     # =====================================================
@@ -4754,12 +6557,30 @@ class GlitchWindow(QMainWindow):
         )
 
 
+        # Stream spoken replies so GLITCH starts talking after the
+        # first sentence instead of after the whole answer.
+        self._ai_streaming = (
+            self.voice_enabled
+            and mode != "SEARCH"
+        )
+
+        self._ai_stream_begun = False
+
+        self._ai_partial_text = ""
+
+
         self.ai_worker = (
             AIWorker(
                 self.assistant,
                 message,
-                mode
+                mode,
+                self._ai_streaming
             )
+        )
+
+
+        self.ai_worker.partial.connect(
+            self.handle_ai_partial
         )
 
 
@@ -4820,6 +6641,14 @@ class GlitchWindow(QMainWindow):
         self,
         message
     ):
+
+        if hasattr(
+            self,
+            "auto_security_scan_service"
+        ):
+
+            self.auto_security_scan_service.notify_glitch_activity()
+
 
         if not message:
             return
@@ -4909,6 +6738,69 @@ class GlitchWindow(QMainWindow):
                     ]
                 )
             )
+
+
+            return
+
+
+        # =================================================
+        # PHASE 3 SECURITY CONTROL
+        # =================================================
+
+        if self.handle_security_control_command(
+            command,
+            speak=False
+        ):
+            return
+
+        # =================================================
+        # GLITCH SECURITY ENGINE
+        # =================================================
+
+        security_result = (
+            self.security_query_controller
+            .parse(
+                command
+            )
+        )
+
+
+        if security_result[
+            "handled"
+        ]:
+
+            action = (
+                security_result[
+                    "action"
+                ]
+            )
+
+
+            if action == "SCAN_DIRECTORY":
+
+                self.start_security_scan(
+                    security_result[
+                        "target"
+                    ],
+                    speak_response=False
+                )
+
+            else:
+
+                message = (
+                    security_result[
+                        "message"
+                    ]
+                    or "Security command processed."
+                )
+
+
+                self.response_panel.set_response(
+                    f"SECURITY // {message}"
+                )
+
+
+                self.security_matrix_page.refresh_security_state()
 
 
             return
@@ -5226,6 +7118,14 @@ class GlitchWindow(QMainWindow):
             "open diagnostics": "SYSTEM_MATRIX",
             "show diagnostics": "SYSTEM_MATRIX",
             "show system stats": "SYSTEM_MATRIX",
+
+            "security matrix": "SECURITY_MATRIX",
+            "open security matrix": "SECURITY_MATRIX",
+            "show security matrix": "SECURITY_MATRIX",
+            "open security": "SECURITY_MATRIX",
+            "show security": "SECURITY_MATRIX",
+            "security hub": "SECURITY_MATRIX",
+            "open security hub": "SECURITY_MATRIX",
         }
 
 
@@ -5342,17 +7242,56 @@ class GlitchWindow(QMainWindow):
             self.conversation_controller.touch()
 
 
-        if self.voice_enabled:
+        if getattr(self, "_ai_stream_begun", False):
+
+            # Already speaking: just let it finish the last sentence.
+            self._ai_stream_begun = False
+
+            self.voice_engine.end_stream()
+
+        elif self.voice_enabled:
 
             self.voice_engine.speak(
                 response
             )
 
 
+    def handle_ai_partial(
+        self,
+        delta
+    ):
+
+        self._ai_partial_text += delta
+
+        self.response_panel.set_response(
+            self._ai_partial_text
+        )
+
+        if not self.voice_enabled:
+
+            return
+
+        if not self._ai_stream_begun:
+
+            self._ai_stream_begun = True
+
+            self.voice_engine.begin_stream()
+
+        self.voice_engine.feed(
+            delta
+        )
+
+
     def handle_ai_error(
         self,
         error
     ):
+
+        if getattr(self, "_ai_stream_begun", False):
+
+            self._ai_stream_begun = False
+
+            self.voice_engine.stop()
 
         self.status_panel.set_core_status(
             "ERROR"
@@ -5384,10 +7323,56 @@ class GlitchWindow(QMainWindow):
     # PAGE ANIMATION
     # =====================================================
 
+    def play_hud_transition(self):
+
+        destination = (
+            self.current_mode
+            .strip()
+            .upper()
+        )
+
+
+        title, subtitle = PAGE_TITLES.get(
+            destination,
+            (
+                destination.replace(
+                    "_",
+                    " "
+                ),
+                "HUD ONLINE"
+            )
+        )
+
+
+        direction = (
+            self.pending_sweep_direction
+        )
+
+        vertical = (
+            self.pending_sweep_vertical
+        )
+
+
+        self.pending_sweep_direction = 0
+
+        self.pending_sweep_vertical = False
+
+
+        self.transition_overlay.play(
+            title,
+            subtitle,
+            direction,
+            vertical
+        )
+
+
     def animate_page(
         self,
         page
     ):
+
+        self.play_hud_transition()
+
 
         effect = (
             QGraphicsOpacityEffect(
@@ -5563,10 +7548,22 @@ class GlitchWindow(QMainWindow):
             "SYSTEM_MATRIX": (
                 self.system_matrix_page,
                 "SYSTEM MATRIX // HARDWARE DIAGNOSTICS ONLINE",
-                self.sidebar.home_button,
+                self.holo_nav.matrix_button,
                 "HOME",
                 0.90,
                 16
+            ),
+
+            # SECURITY MATRIX is another HOME-adjacent system layer.
+            # Until a dedicated sidebar control is added, HOME remains
+            # highlighted while navigating internal GLITCH matrices.
+            "SECURITY_MATRIX": (
+                self.security_matrix_page,
+                "SECURITY MATRIX // CYBER DEFENSE GRID ONLINE",
+                self.holo_nav.security_button,
+                "HOME",
+                1.00,
+                18
             ),
         }
 
@@ -5626,6 +7623,11 @@ class GlitchWindow(QMainWindow):
 
         self.set_active_sidebar_button(
             active_button
+        )
+
+
+        self.holo_projector.set_active(
+            destination
         )
 
 
@@ -6217,6 +8219,9 @@ class GlitchWindow(QMainWindow):
         self,
         destination
     ):
+
+        if not self.authenticated:
+            return False
         """
         Send every navigation request through CommandRouter.
         """
@@ -6301,11 +8306,25 @@ class GlitchWindow(QMainWindow):
         )
 
 
+    def open_security_matrix(self):
+
+        return self.navigate_to(
+            "SECURITY_MATRIX"
+        )
+
+
     # =====================================================
     # SWIPE CONTROL
     # =====================================================
 
     def handle_swipe_left(self):
+
+        if not self.authenticated:
+            return
+
+
+        self.pending_sweep_direction = 1
+
 
         success = (
             self.gesture_controller
@@ -6315,7 +8334,15 @@ class GlitchWindow(QMainWindow):
         )
 
 
+        self.pending_sweep_direction = 0
+
+
         if success:
+
+            self.hand_overlay.flash_swipe(
+                1
+            )
+
 
             self.response_panel.set_response(
                 "GESTURE // SWIPE LEFT DETECTED"
@@ -6323,6 +8350,13 @@ class GlitchWindow(QMainWindow):
 
 
     def handle_swipe_right(self):
+
+        if not self.authenticated:
+            return
+
+
+        self.pending_sweep_direction = -1
+
 
         success = (
             self.gesture_controller
@@ -6332,11 +8366,363 @@ class GlitchWindow(QMainWindow):
         )
 
 
+        self.pending_sweep_direction = 0
+
+
         if success:
+
+            self.hand_overlay.flash_swipe(
+                -1
+            )
+
 
             self.response_panel.set_response(
                 "GESTURE // SWIPE RIGHT DETECTED"
             )
+
+
+    def handle_swipe_up(self):
+
+        if not self.authenticated:
+            return
+
+
+        # Hand moved up: the new section sweeps in bottom -> top.
+        self.pending_sweep_direction = -1
+
+        self.pending_sweep_vertical = True
+
+
+        success = (
+            self.gesture_controller
+            .swipe_up(
+                self.current_mode
+            )
+        )
+
+
+        self.pending_sweep_direction = 0
+
+        self.pending_sweep_vertical = False
+
+
+        if success:
+
+            self.hand_overlay.flash_swipe(
+                -1,
+                vertical=True
+            )
+
+
+            self.response_panel.set_response(
+                "GESTURE // SWIPE UP // NEXT SECTION"
+            )
+
+
+    def handle_swipe_down(self):
+
+        if not self.authenticated:
+            return
+
+
+        self.pending_sweep_direction = 1
+
+        self.pending_sweep_vertical = True
+
+
+        success = (
+            self.gesture_controller
+            .swipe_down(
+                self.current_mode
+            )
+        )
+
+
+        self.pending_sweep_direction = 0
+
+        self.pending_sweep_vertical = False
+
+
+        if success:
+
+            self.hand_overlay.flash_swipe(
+                1,
+                vertical=True
+            )
+
+
+            self.response_panel.set_response(
+                "GESTURE // SWIPE DOWN // PREVIOUS SECTION"
+            )
+
+
+    # =====================================================
+    # FACE-ONLY AUTHENTICATION
+    # =====================================================
+
+    def start_authentication(self):
+
+        if self.authenticated:
+            return
+
+        if self._face_unlock_in_progress:
+            return
+
+
+        self.hand_overlay.set_enabled(False)
+        self.hand_overlay.clear_hand()
+
+
+        try:
+
+            self.voice_listener.stop()
+
+        except Exception:
+
+            pass
+
+
+        try:
+
+            self.hand_tracker.stop()
+
+        except Exception:
+
+            pass
+
+
+        self.finger_cursor.hide()
+
+
+        self.set_voice_input_status(
+            "LOCKED"
+        )
+
+
+        self.auth_overlay.begin_session()
+
+
+        self.auth_overlay.setGeometry(
+            self.central_widget.rect()
+        )
+
+
+        self.auth_overlay.raise_()
+
+
+        self.auth_session.begin()
+
+
+    def _text_contains_face_success(
+        self,
+        *values
+    ):
+
+        text = " ".join(
+            str(value)
+            for value in values
+            if value is not None
+        ).lower()
+
+
+        success_words = (
+            "verified",
+            "matched",
+            "match",
+            "passed",
+            "pass",
+            "success",
+            "confirmed",
+            "accepted",
+            "granted",
+        )
+
+
+        failure_words = (
+            "failed",
+            "fail",
+            "denied",
+            "rejected",
+            "mismatch",
+            "not verified",
+            "not matched",
+        )
+
+
+        if any(
+            word in text
+            for word in failure_words
+        ):
+
+            return False
+
+
+        return any(
+            word in text
+            for word in success_words
+        )
+
+
+    def handle_face_auth_status(
+        self,
+        score,
+        present,
+        box
+    ):
+
+        # Live face_status is presentation feedback only.
+        # AuthSession.granted / factor_result decides access.
+        return
+
+
+    def handle_face_factor_result(
+        self,
+        name,
+        ok,
+        score
+    ):
+
+        if self.authenticated:
+            return
+
+        if (
+            str(name).strip().upper() == "FACE"
+            and bool(ok)
+        ):
+
+            self.complete_face_unlock()
+
+
+    def complete_face_unlock(self):
+
+        if self.authenticated:
+            return
+
+
+        self._face_unlock_in_progress = True
+
+        self.authenticated = True
+
+
+        # Stop the legacy session immediately after successful
+        # camera verification so it cannot advance to voice auth.
+        try:
+
+            self.auth_session.shutdown()
+
+        except Exception:
+
+            pass
+
+
+        self.auth_overlay.show_granted(
+            "404"
+        )
+
+
+    def handle_auth_granted(
+        self,
+        result
+    ):
+
+        if self.authenticated:
+            return
+
+        self._face_unlock_in_progress = True
+        self.authenticated = True
+
+        self.auth_overlay.show_granted(
+            "404"
+        )
+
+
+    def handle_auth_denied(
+        self,
+        result
+    ):
+
+        if self.authenticated:
+            return
+
+
+        self.auth_overlay.show_denied(
+            result
+        )
+
+
+    def finish_unlock(self):
+
+        if not self.authenticated:
+            return
+
+
+        self.hand_overlay.set_enabled(
+            True
+        )
+
+
+        self._face_unlock_in_progress = False
+
+
+        self.start_authenticated_systems()
+
+
+    def start_authenticated_systems(self):
+
+        if self._authenticated_systems_started:
+            return
+
+
+        self._authenticated_systems_started = True
+
+
+        # If a brand-new security finding appeared while the
+        # biometric gate was active, present it now.
+        QTimer.singleShot(
+            1200,
+            self.show_next_security_alert
+        )
+
+
+        self.status_panel.set_core_status(
+            "ONLINE"
+        )
+
+
+        self.set_voice_input_status(
+            "STARTING"
+        )
+
+
+        self.transition_overlay.play(
+            "GLITCH.EXE",
+            "FACE VERIFIED // SYSTEMS ONLINE",
+            1
+        )
+
+
+        QTimer.singleShot(
+            250,
+            self.startup_greeting
+        )
+
+
+        QTimer.singleShot(
+            1100,
+            self.start_hand_tracking
+        )
+
+
+        QTimer.singleShot(
+            2200,
+            self.start_voice_listener
+        )
+
+
+        QTimer.singleShot(
+            3500,
+            self.initialize_location_access
+        )
 
 
     # =====================================================
@@ -6384,18 +8770,39 @@ class GlitchWindow(QMainWindow):
         )
 
 
+        # Keep the microphone open (barge-in) instead of stopping it.
+        self.voice_listener.set_assistant_speaking(
+            True
+        )
+
         self.set_voice_input_status(
-            "PAUSED"
+            "LISTENING"
+            if self.voice_listener_active
+            else "PAUSED"
         )
 
 
-        try:
+    def handle_barge_in(self):
 
-            self.voice_listener.stop()
+        if not self.voice_output_active:
 
-        except Exception:
+            return
 
-            pass
+        self.voice_engine.stop()
+
+        self.response_panel.set_response(
+            "GLITCH // GO AHEAD..."
+        )
+
+        if (
+            hasattr(
+                self,
+                "conversation_controller"
+            )
+            and self.conversation_controller.is_active()
+        ):
+
+            self.conversation_controller.touch()
 
 
     def handle_voice_finished(self):
@@ -6403,6 +8810,24 @@ class GlitchWindow(QMainWindow):
         self.voice_output_active = (
             False
         )
+
+        self.voice_listener.set_assistant_speaking(
+            False
+        )
+
+        if self.voice_listener_active:
+
+            self.status_panel.set_voice_status(
+                "ONLINE"
+                if self.voice_enabled
+                else "MUTED"
+            )
+
+            self.set_voice_input_status(
+                "LISTENING"
+            )
+
+            return
 
 
         self.status_panel.set_voice_status(
@@ -6432,6 +8857,10 @@ class GlitchWindow(QMainWindow):
             False
         )
 
+        self.voice_listener.set_assistant_speaking(
+            False
+        )
+
 
         self.status_panel.set_voice_status(
             "ERROR"
@@ -6455,6 +8884,10 @@ class GlitchWindow(QMainWindow):
 
     def start_hand_tracking(self):
 
+        if not self.authenticated:
+            return
+
+
         if not self.hand_thread.isRunning():
 
             self.status_panel.set_gesture_status(
@@ -6472,7 +8905,8 @@ class GlitchWindow(QMainWindow):
         )
 
 
-        self.finger_cursor.show()
+        # Direct-swipe mode has no visible finger cursor.
+        self.finger_cursor.hide()
 
 
     def handle_tracking_stopped(self):
@@ -6525,179 +8959,277 @@ class GlitchWindow(QMainWindow):
         normalized_y
     ):
 
-        window_x = (
-            normalized_x
-            * self.central_widget.width()
-        )
+        # Legacy compatibility only.
+        # Direct-swipe mode does not render a finger cursor or
+        # perform dwell-click navigation.
+        self.finger_cursor.hide()
 
-
-        window_y = (
-            normalized_y
-            * self.central_widget.height()
-        )
-
-
-        self.finger_x = (
-            window_x
-        )
-
-
-        self.finger_y = (
-            window_y
-        )
-
-
-        self.finger_cursor.move(
-            int(
-                window_x
-                - self.finger_cursor.width()
-                / 2
-            ),
-            int(
-                window_y
-                - self.finger_cursor.height()
-                / 2
-            )
-        )
-
-
-        self.finger_cursor.show()
-
-        self.finger_cursor.raise_()
-
-
-        # =============================================
-        # SYSTEM MATRIX
-        #
-        # No dwell-click behavior here.
-        # Finger movement is used primarily for swipe.
-        # =============================================
-
-        if self.current_mode == "SYSTEM_MATRIX":
-
-            self.reset_button_hover()
-
-            return
-
-
-        detected_button = None
-
-
-        for button in (
-            self.sidebar_buttons()
-        ):
-
-            top_left = button.mapTo(
-                self.central_widget,
-                button.rect().topLeft()
-            )
-
-
-            button_rect = QRect(
-                top_left,
-                button.size()
-            )
-
-
-            if button_rect.contains(
-                int(window_x),
-                int(window_y)
-            ):
-
-                detected_button = (
-                    button
-                )
-
-                break
-
-
-        if detected_button:
-
-            if (
-                detected_button
-                != self.hovered_button
-            ):
-
-                self.reset_button_hover()
-
-
-                self.hovered_button = (
-                    detected_button
-                )
-
-
-                self.hover_start_time = (
-                    self.current_milliseconds()
-                )
-
-
-                self.apply_hover_style(
-                    detected_button
-                )
-
-
-            else:
-
-                if (
-                    self.hover_start_time
-                    is None
-                ):
-
-                    return
-
-
-                elapsed = (
-                    self.current_milliseconds()
-                    - self.hover_start_time
-                )
-
-
-                if elapsed >= (
-                    self.button_dwell_ms
-                ):
-
-                    detected_button.click()
-
-
-                    self.hover_start_time = (
-                        self.current_milliseconds()
-                        + 999999
-                    )
-
-
-        else:
-
-            self.reset_button_hover()
+        return
 
 
     # =====================================================
     # PROXIMITY RIPPLE
     # =====================================================
 
-    def handle_proximity_touch(
+    HUD_TOUCH_PADDING = 18
+
+    HUD_TOUCH_STICKY = 12
+
+    def _hud_button_list(self):
+
+        # findChildren walks the whole widget tree, so refresh it
+        # a few times a second rather than on every camera frame.
+        now = time.perf_counter()
+
+        cache = getattr(self, "_hud_button_cache", None)
+
+        if cache is not None and now - cache[0] < 0.15:
+
+            return cache[1]
+
+        buttons = self.central_widget.findChildren(QPushButton)
+
+        self._hud_button_cache = (now, buttons)
+
+        return buttons
+
+
+    def _hud_button_at(
+        self,
+        normalized_x,
+        normalized_y,
+        sticky=None
+    ):
+
+        """Best HUD button under a normalized point, as
+        (button, QRect in central_widget coordinates), or None.
+
+        A point inside a button beats a point only inside its touch
+        padding; ties go to the nearest button centre. The button
+        currently hovered (sticky) gets extra reach so the highlight
+        does not flicker on its edge."""
+
+        px = normalized_x * self.central_widget.width()
+
+        py = normalized_y * self.central_widget.height()
+
+        best = None
+
+        best_key = None
+
+        for button in self._hud_button_list():
+
+            try:
+
+                if (
+                    not button.isVisible()
+                    or not button.isEnabled()
+                    or button.width() <= 0
+                    or button.height() <= 0
+                ):
+
+                    continue
+
+                top_left = button.mapTo(
+                    self.central_widget,
+                    QPoint(0, 0)
+                )
+
+            except RuntimeError:
+
+                # Widget was deleted since the cache was built.
+                self._hud_button_cache = None
+
+                continue
+
+            rect = QRect(top_left, button.size())
+
+            reach = self.HUD_TOUCH_PADDING
+
+            if button is sticky:
+
+                reach += self.HUD_TOUCH_STICKY
+
+            if not rect.adjusted(
+                -reach, -reach, reach, reach
+            ).contains(int(px), int(py)):
+
+                continue
+
+            centre = rect.center()
+
+            key = (
+                0 if rect.contains(int(px), int(py)) else 1,
+                math.hypot(
+                    px - centre.x(),
+                    py - centre.y()
+                )
+            )
+
+            if best_key is None or key < best_key:
+
+                best_key = key
+
+                best = (button, rect)
+
+        return best
+
+
+    def _hud_button_name(self, button):
+
+        return (
+            button.text().strip()
+            or button.objectName()
+            or "HUD CONTROL"
+        )
+
+
+    def handle_finger_hover(
         self,
         normalized_x,
         normalized_y
     ):
 
-        x = (
-            normalized_x
-            * self.reactor.width()
-        )
+        if not self.authenticated:
 
+            return
 
-        y = (
+        self.hand_overlay.set_pointer(
+            normalized_x,
             normalized_y
-            * self.reactor.height()
+        )
+
+        hit = self._hud_button_at(
+            normalized_x,
+            normalized_y,
+            sticky=getattr(self, "_finger_target", None)
+        )
+
+        if hit is None:
+
+            self.clear_finger_target()
+
+            return
+
+        button, rect = hit
+
+        self.holo_projector.preview(
+            getattr(button, "nav_key", "")
+        )
+
+        if button is not getattr(self, "_finger_target", None):
+
+            self._finger_target = button
+
+            self._finger_label = self._hud_button_name(button)
+
+        self.hand_overlay.set_hover(
+            QRectF(rect),
+            self._finger_label
         )
 
 
-        self.reactor.create_ripple(
-            QPointF(
-                x,
-                y
+    def clear_finger_target(self):
+
+        if getattr(self, "_finger_target", None) is not None:
+
+            self._finger_target = None
+
+        self.hand_overlay.set_hover(None)
+
+        self.holo_projector.preview("")
+
+
+    def clear_finger_hover(self):
+
+        self.clear_finger_target()
+
+
+    def handle_hud_pinch(
+        self,
+        normalized_x,
+        normalized_y
+    ):
+
+        if not self.authenticated:
+
+            return
+
+        hit = self._hud_button_at(
+            normalized_x,
+            normalized_y
+        )
+
+        if hit is None:
+
+            self.response_panel.set_response(
+                "GESTURE // PINCH DETECTED // NO HUD TARGET"
             )
+
+            return
+
+        selected_button, rect = hit
+
+        screen_x = int(
+            normalized_x
+            * self.central_widget.width()
         )
+
+        screen_y = int(
+            normalized_y
+            * self.central_widget.height()
+        )
+
+        try:
+
+            reactor_point = (
+                self.reactor.mapFrom(
+                    self.central_widget,
+                    QPoint(
+                        screen_x,
+                        screen_y
+                    )
+                )
+            )
+
+            self.reactor.create_ripple(
+                QPointF(
+                    reactor_point.x(),
+                    reactor_point.y()
+                )
+            )
+
+        except Exception:
+
+            pass
+
+        self.hand_overlay.flash_click(
+            QRectF(rect)
+        )
+
+        button_name = self._hud_button_name(
+            selected_button
+        )
+
+        self.response_panel.set_response(
+            f"GESTURE // HUD SELECT // {button_name.upper()}"
+        )
+
+        try:
+
+            self.gesture_controller.pinch_click(
+                button_name,
+                self.current_mode
+            )
+
+        except Exception:
+
+            pass
+
+        selected_button.click()
+
+        # The click may change the page; rebuild the target list.
+        self._hud_button_cache = None
 
 
     # =====================================================
@@ -6706,22 +9238,8 @@ class GlitchWindow(QMainWindow):
 
     def sidebar_buttons(self):
 
-        return [
-
-            self.sidebar.home_button,
-
-            self.sidebar.chat_button,
-
-            self.sidebar.create_button,
-
-            self.sidebar.search_button,
-
-            self.sidebar.code_button,
-
-            self.sidebar.apps_button,
-
-            self.sidebar.settings_button,
-        ]
+        # The sidebar is now the holographic nav rail.
+        return self.holo_nav.button_list()
 
 
     def set_active_sidebar_button(
@@ -6729,57 +9247,9 @@ class GlitchWindow(QMainWindow):
         active_button
     ):
 
-        for button in (
-            self.sidebar_buttons()
-        ):
-
-            if (
-                button
-                == active_button
-            ):
-
-                button.setStyleSheet(
-                    """
-                    QPushButton {
-
-                        background:
-                            rgba(
-                                57,
-                                255,
-                                120,
-                                45
-                            );
-
-                        color:
-                            #39ff78;
-
-                        border:
-                            1px solid
-                            rgba(
-                                57,
-                                255,
-                                120,
-                                210
-                            );
-
-                        border-radius:
-                            8px;
-
-                        padding:
-                            10px;
-
-                        text-align:
-                            left;
-                    }
-                    """
-                )
-
-
-            else:
-
-                self.apply_default_button_style(
-                    button
-                )
+        self.holo_nav.set_active_button(
+            active_button
+        )
 
 
     def apply_default_button_style(
@@ -6873,60 +9343,7 @@ class GlitchWindow(QMainWindow):
 
     def reset_button_hover(self):
 
-        if self.hovered_button:
-
-            active_map = {
-
-                "HOME":
-                    self.sidebar.home_button,
-
-                "SYSTEM_MATRIX":
-                    self.sidebar.home_button,
-
-                "CHAT":
-                    self.sidebar.chat_button,
-
-                "CREATE":
-                    self.sidebar.create_button,
-
-                "SEARCH":
-                    self.sidebar.search_button,
-
-                "CODE":
-                    self.sidebar.code_button,
-
-                "APPS":
-                    self.sidebar.apps_button,
-
-                "SETTINGS":
-                    self.sidebar.settings_button,
-            }
-
-
-            active = (
-                active_map.get(
-                    self.current_mode
-                )
-            )
-
-
-            if (
-                self.hovered_button
-                == active
-            ):
-
-                self.set_active_sidebar_button(
-                    active
-                )
-
-
-            else:
-
-                self.apply_default_button_style(
-                    self.hovered_button
-                )
-
-
+        # Legacy dwell-hover hook. Nav nodes animate their own hover.
         self.hovered_button = None
         self.hover_start_time = None
 
@@ -6972,28 +9389,35 @@ class GlitchWindow(QMainWindow):
         )
 
 
-        sidebar_width = (
-            175
-        )
-
-
         status_width = (
             215
         )
 
+        margin = 20
 
-        self.sidebar.setGeometry(
-            25,
-            65,
-            sidebar_width,
-            height - 120
+        rail_top = 12
+
+        rail_height = 76
+
+        content_top = (
+            rail_top
+            + rail_height
+            + 12
+        )
+
+        # The projection bay takes the old sidebar column. On
+        # narrow windows it folds away to give pages the room.
+        bay_width = (
+            240
+            if width >= 1150
+            else 0
         )
 
 
         self.status_panel.setGeometry(
             width
             - status_width
-            - 20,
+            - margin,
             65,
             status_width,
             height - 120
@@ -7003,7 +9427,7 @@ class GlitchWindow(QMainWindow):
         self.voice_input_badge.setGeometry(
             width
             - status_width
-            - 20,
+            - margin,
             height - 150,
             status_width,
             72
@@ -7011,8 +9435,8 @@ class GlitchWindow(QMainWindow):
 
 
         center_left = (
-            sidebar_width
-            + 50
+            margin
+            + (bay_width + 22 if bay_width else 5)
         )
 
 
@@ -7029,11 +9453,35 @@ class GlitchWindow(QMainWindow):
         )
 
 
+        self.holo_nav.setGeometry(
+            margin,
+            rail_top,
+            center_right - margin,
+            rail_height
+        )
+
+
+        if bay_width:
+
+            self.holo_projector.setGeometry(
+                margin,
+                content_top,
+                bay_width,
+                height - content_top - 30
+            )
+
+            self.holo_projector.show()
+
+        else:
+
+            self.holo_projector.hide()
+
+
         self.page_stack.setGeometry(
             center_left,
-            65,
+            content_top,
             center_width,
-            height - 280
+            height - 215 - content_top
         )
 
 
@@ -7055,7 +9503,9 @@ class GlitchWindow(QMainWindow):
 
         self.reactor.lower()
 
-        self.sidebar.raise_()
+        self.holo_projector.raise_()
+
+        self.holo_nav.raise_()
 
         self.status_panel.raise_()
 
@@ -7070,6 +9520,61 @@ class GlitchWindow(QMainWindow):
         self.finger_cursor.raise_()
 
 
+        self.hand_overlay.setGeometry(
+            self.central_widget.rect()
+        )
+
+        self.transition_overlay.setGeometry(
+            self.central_widget.rect()
+        )
+
+        self.hand_overlay.raise_()
+
+        self.transition_overlay.raise_()
+
+
+        if hasattr(
+            self,
+            "security_alert_overlay"
+        ):
+
+            self.security_alert_overlay.setGeometry(
+                self.central_widget.rect()
+            )
+
+            if self.security_alert_overlay.isVisible():
+
+                self.security_alert_overlay.raise_()
+
+
+        if hasattr(
+            self,
+            "security_findings_overlay"
+        ):
+
+            self.security_findings_overlay.setGeometry(
+                self.central_widget.rect()
+            )
+
+            if self.security_findings_overlay.isVisible():
+                self.security_findings_overlay.raise_()
+
+
+        if hasattr(
+            self,
+            "auth_overlay"
+        ):
+
+            self.auth_overlay.setGeometry(
+                self.central_widget.rect()
+            )
+
+
+            if self.auth_overlay.isVisible():
+
+                self.auth_overlay.raise_()
+
+
     # =====================================================
     # CLOSE
     # =====================================================
@@ -7080,6 +9585,15 @@ class GlitchWindow(QMainWindow):
     ):
 
         self.save_settings()
+
+
+        try:
+
+            self.auth_session.shutdown()
+
+        except Exception:
+
+            pass
 
 
         try:

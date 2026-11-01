@@ -1,0 +1,19 @@
+{
+  "trusted_extensions": [
+    ".cpp",
+    ".csv",
+    ".h",
+    ".hpp",
+    ".ipynb",
+    ".json",
+    ".md",
+    ".pkt",
+    ".py",
+    ".pyproj",
+    ".sln",
+    ".txt",
+    ".vcxproj"
+  ],
+  "trusted_directories": [],
+  "trusted_hashes": []
+}

@@ -2,6 +2,11 @@ class ContextController:
     """
     Phase 2 conversational context.
 
+    The AI now keeps the real conversation history itself
+    (core/assistant.py), so build_ai_context only adds the
+    situational background: what GLITCH just did, what "it" refers
+    to, how the user seems, and the user profile.
+
     Tracks recent system, process, app, weather, and navigation
     references so short follow-ups can be resolved without
     requiring the user to repeat full commands.
@@ -346,6 +351,27 @@ class ContextController:
 
             "how about uptime":
                 "system uptime",
+
+            "what's eating my cpu":
+                "what's using the most cpu",
+
+            "what's hogging my cpu":
+                "what's using the most cpu",
+
+            "what's hogging my memory":
+                "what's using the most memory",
+
+            "what's hogging my ram":
+                "what's using the most ram",
+
+            "how's my battery":
+                "battery status",
+
+            "how's the network":
+                "network status",
+
+            "how long have i been on":
+                "system uptime",
         }
 
         if command in system_followups:
@@ -376,6 +402,10 @@ class ContextController:
                 "close it",
                 "close that",
                 "close the app",
+                "kill it",
+                "shut it",
+                "close it down",
+                "get rid of it",
             ]
             and self.last_app_target
         ):
@@ -389,6 +419,10 @@ class ContextController:
                 "open it",
                 "open that",
                 "open the app",
+                "open it again",
+                "open it back up",
+                "bring it back",
+                "reopen it",
             ]
             and self.last_app_target
         ):

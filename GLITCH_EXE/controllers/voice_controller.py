@@ -18,6 +18,7 @@ class VoiceController:
         application_service,
         event_bus=None
     ):
+
         self.interaction_controller = (
             interaction_controller
         )
@@ -43,9 +44,7 @@ class VoiceController:
     ):
 
         if self.event_bus is None:
-
             return
-
 
         event = VoiceEvent(
 
@@ -68,7 +67,6 @@ class VoiceController:
             }
         )
 
-
         self.event_bus.publish(
             event
         )
@@ -88,7 +86,6 @@ class VoiceController:
             .strip()
             .lower()
         )
-
 
         navigation_commands = {
 
@@ -121,8 +118,15 @@ class VoiceController:
             "open diagnostics": "SYSTEM_MATRIX",
             "show diagnostics": "SYSTEM_MATRIX",
             "show system stats": "SYSTEM_MATRIX",
-        }
 
+            "security matrix": "SECURITY_MATRIX",
+            "open security matrix": "SECURITY_MATRIX",
+            "show security matrix": "SECURITY_MATRIX",
+            "open security": "SECURITY_MATRIX",
+            "show security": "SECURITY_MATRIX",
+            "security hub": "SECURITY_MATRIX",
+            "open security hub": "SECURITY_MATRIX",
+        }
 
         destination = (
             navigation_commands
@@ -131,10 +135,8 @@ class VoiceController:
             )
         )
 
-
         if destination is None:
             return False
-
 
         intent = InteractionIntent(
 
@@ -151,7 +153,6 @@ class VoiceController:
                 "destination": destination,
             }
         )
-
 
         return (
             self.interaction_controller
@@ -176,15 +177,12 @@ class VoiceController:
             .lower()
         )
 
-
         if command in [
-
             "play music",
             "pause music",
             "play",
             "pause",
             "resume music",
-
         ]:
 
             self.application_service.media_play_pause()
@@ -194,13 +192,10 @@ class VoiceController:
                 "Media control activated."
             )
 
-
         if command in [
-
             "next track",
             "next song",
             "skip song",
-
         ]:
 
             self.application_service.media_next()
@@ -210,13 +205,10 @@ class VoiceController:
                 "Next track."
             )
 
-
         if command in [
-
             "previous track",
             "previous song",
             "go back a song",
-
         ]:
 
             self.application_service.media_previous()
@@ -226,12 +218,9 @@ class VoiceController:
                 "Previous track."
             )
 
-
         if command in [
-
             "stop music",
             "stop playback",
-
         ]:
 
             self.application_service.media_stop()
@@ -240,7 +229,6 @@ class VoiceController:
                 True,
                 "Playback stopped."
             )
-
 
         return (
             False,
@@ -263,7 +251,6 @@ class VoiceController:
             .lower()
         )
 
-
         if not command.startswith(
             "open "
         ):
@@ -273,7 +260,6 @@ class VoiceController:
                 None
             )
 
-
         target = (
             command[
                 len("open "):
@@ -282,7 +268,6 @@ class VoiceController:
                 " ,.!?:;-"
             )
         )
-
 
         app_map = [
 
@@ -341,7 +326,6 @@ class VoiceController:
             ),
         ]
 
-
         for (
             phrase,
             app_key,
@@ -357,7 +341,6 @@ class VoiceController:
                     )
                 )
 
-
                 if success:
 
                     return (
@@ -365,12 +348,10 @@ class VoiceController:
                         confirmation
                     )
 
-
                 return (
                     True,
                     message
                 )
-
 
         return (
             False,
@@ -393,7 +374,6 @@ class VoiceController:
             .lower()
         )
 
-
         if not command.startswith(
             "close "
         ):
@@ -403,14 +383,12 @@ class VoiceController:
                 None
             )
 
-
         target = (
             command[
                 len("close "):
             ]
             .strip()
         )
-
 
         app_map = [
 
@@ -463,7 +441,6 @@ class VoiceController:
             ),
         ]
 
-
         for (
             phrase,
             app_key,
@@ -479,7 +456,6 @@ class VoiceController:
                     )
                 )
 
-
                 if success:
 
                     return (
@@ -487,13 +463,11 @@ class VoiceController:
                         f"Closing {display_name}."
                     )
 
-
                 return (
                     True,
                     f"{display_name} does not appear "
                     f"to be running."
                 )
-
 
         return (
             False,
@@ -516,11 +490,6 @@ class VoiceController:
             .lower()
         )
 
-
-        # -----------------------------------------------------
-        # NAVIGATION
-        # -----------------------------------------------------
-
         if self.handle_navigation(
             command
         ):
@@ -531,24 +500,17 @@ class VoiceController:
                 "navigation"
             )
 
-
             return {
                 "handled": True,
                 "type": "navigation",
                 "message": None,
             }
 
-
-        # -----------------------------------------------------
-        # MEDIA
-        # -----------------------------------------------------
-
         handled, message = (
             self.handle_media(
                 command
             )
         )
-
 
         if handled:
 
@@ -558,24 +520,17 @@ class VoiceController:
                 "media"
             )
 
-
             return {
                 "handled": True,
                 "type": "media",
                 "message": message,
             }
 
-
-        # -----------------------------------------------------
-        # CLOSE APP
-        # -----------------------------------------------------
-
         handled, message = (
             self.handle_close_app(
                 command
             )
         )
-
 
         if handled:
 
@@ -585,24 +540,17 @@ class VoiceController:
                 "close_app"
             )
 
-
             return {
                 "handled": True,
                 "type": "close_app",
                 "message": message,
             }
 
-
-        # -----------------------------------------------------
-        # OPEN APP
-        # -----------------------------------------------------
-
         handled, message = (
             self.handle_open_app(
                 command
             )
         )
-
 
         if handled:
 
@@ -612,24 +560,17 @@ class VoiceController:
                 "open_app"
             )
 
-
             return {
                 "handled": True,
                 "type": "open_app",
                 "message": message,
             }
 
-
-        # -----------------------------------------------------
-        # NOT HANDLED
-        # -----------------------------------------------------
-
         self.publish_voice_event(
             command,
             False,
             None
         )
-
 
         return {
             "handled": False,
