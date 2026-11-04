@@ -101,10 +101,27 @@ class VoiceListener(QObject):
 
         # Words the recogniser should expect. Add your own in .env as
         # GLITCH_STT_HINTS="Serato, Ableton, ...".
-        self.recognition_hints = (
-            "GLITCH, Glitch, 404, GLITCH.EXE, "
-            + os.getenv("GLITCH_STT_HINTS", "Serato, Spotify, Visual Studio")
+        extra_hints = os.getenv(
+            "GLITCH_STT_HINTS",
+            "Serato, Spotify, Visual Studio"
         )
+
+        # Written as a sentence: a bare word list is what the recogniser
+        # tends to "hear" back on silence or background noise.
+        self.recognition_hints = (
+            "The user, 404, is talking to their AI assistant named Glitch "
+            f"(GLITCH.EXE). Words that may come up: {extra_hints}."
+        )
+
+        self._hint_words = {
+            word.strip(".,()!?\"'").lower()
+            for word in (
+                self.recognition_hints
+                + " GLITCH, Glitch, 404, GLITCH.EXE, "
+                + extra_hints
+            ).split()
+            if word.strip(".,()!?\"'")
+        }
 
         self.debug = os.getenv("GLITCH_VOICE_DEBUG") == "1"
 
@@ -132,7 +149,11 @@ class VoiceListener(QObject):
         # Consecutive loud blocks needed to start (ignores clicks).
         self.start_blocks = 2
 
-        self.silence_seconds = 0.8
+        # How long a pause ends your sentence. Lower = GLITCH replies
+        # sooner; too low and it may cut you off mid-thought.
+        self.silence_seconds = float(
+            os.getenv("GLITCH_SILENCE_SECONDS", "0.65")
+        )
 
         self.minimum_speech_seconds = 0.25
 
@@ -153,8 +174,17 @@ class VoiceListener(QObject):
         # How much louder than the estimated echo your voice must be.
         self.barge_in_echo_margin = 3.0
 
+        # Margin over GLITCH's own background sound (ambience) when
+        # deciding whether YOU started talking.
+        self.background_echo_margin = 2.2
+
         # How long you must keep talking before GLITCH yields.
-        self.barge_in_hold_seconds = 0.25
+        self.barge_in_hold_seconds = 0.4
+
+        # Ignore barge-in for the first moment of every GLITCH reply:
+        # the room's echo of the first word is the most likely thing
+        # to be mistaken for you.
+        self.barge_in_grace_seconds = 0.7
 
         # After GLITCH stops, keep the stricter gate this long so the
         # room's echo tail isn't recorded.
@@ -172,7 +202,9 @@ class VoiceListener(QObject):
         self._echo_reference = None
 
         # Estimated mic level per unit of GLITCH output (speaker -> mic).
-        self._echo_coupling = 0.3
+        self._echo_coupling = 0.5
+
+        self._assistant_started_at = 0.0
 
         self._transcribe_queue = queue.Queue()
 
@@ -192,6 +224,10 @@ class VoiceListener(QObject):
         if self._assistant_speaking and not speaking:
 
             self._assistant_stopped_at = time.time()
+
+        if speaking and not self._assistant_speaking:
+
+            self._assistant_started_at = time.time()
 
         self._assistant_speaking = speaking
 
@@ -402,7 +438,12 @@ class VoiceListener(QObject):
 
                 preroll.append(chunk)
 
-                if not (self.barge_in_enabled and self._assistant_speaking):
+                in_grace = (
+                    time.time() - self._assistant_started_at
+                    < self.barge_in_grace_seconds
+                )
+
+                if not (self.barge_in_enabled and self._assistant_speaking) or in_grace:
 
                     barge_window.clear()
 
@@ -436,7 +477,7 @@ class VoiceListener(QObject):
 
                     ratio = rms / output
 
-                    rate = 0.05 if ratio > self._echo_coupling else 0.01
+                    rate = 0.05 if ratio > self._echo_coupling else 0.02
 
                     self._echo_coupling += (ratio - self._echo_coupling) * rate
 
@@ -488,6 +529,28 @@ class VoiceListener(QObject):
                 self.energy_threshold * 2.5
             )
 
+            # Sounds GLITCH itself is playing (background ambience)
+            # reach the mic too. Stay above their estimated echo so
+            # they never count as you talking.
+            output = 0.0
+
+            if self._echo_reference is not None:
+
+                try:
+
+                    output = float(self._echo_reference())
+
+                except Exception:
+
+                    output = 0.0
+
+            if output > 0.0:
+
+                threshold = max(
+                    threshold,
+                    self._echo_coupling * output * self.background_echo_margin
+                )
+
             if self.debug and rms > threshold * 0.5:
 
                 print(f"MIC LEVEL: {rms:.5f} (threshold {threshold:.5f})")
@@ -512,6 +575,18 @@ class VoiceListener(QObject):
                     rate = 0.05 if rms < noise_floor else 0.003
 
                     noise_floor += (rms - noise_floor) * rate
+
+                    # Keep learning how much of GLITCH's own sound
+                    # reaches the mic (from quiet, non-speech blocks).
+                    if output > 0.005:
+
+                        ratio = rms / output
+
+                        learn = 0.02 if ratio > self._echo_coupling else 0.005
+
+                        self._echo_coupling += (ratio - self._echo_coupling) * learn
+
+                        self._echo_coupling = min(max(self._echo_coupling, 0.0), 3.0)
 
                 if loud_run >= self.start_blocks:
 
@@ -573,6 +648,30 @@ class VoiceListener(QObject):
     # TRANSCRIBE (own thread)
     # =====================================================
 
+    def _is_prompt_echo(
+        self,
+        text
+    ):
+
+        words = [
+            word.strip(".,()!?\"'").lower()
+            for word in text.split()
+            if word.strip(".,()!?\"'")
+        ]
+
+        if len(words) < 3:
+
+            return False
+
+        from_hints = sum(1 for word in words if word in self._hint_words)
+
+        ratio = from_hints / len(words)
+
+        # Every word comes from the hint text, or nearly every word in
+        # a long string: that's an echo, not you.
+        return ratio == 1.0 or (len(words) >= 6 and ratio >= 0.85)
+
+
     def _transcribe_loop(self):
 
         while True:
@@ -626,16 +725,26 @@ class VoiceListener(QObject):
             .strip()
         )
 
-        print("GLITCH HEARD:", repr(text))
-
         if text.lower() in JUNK_TRANSCRIPTS and spoken_seconds < 1.2:
 
+            if self.debug:
+
+                print("GLITCH IGNORED (noise):", repr(text))
+
             return
 
-        # The prompt sometimes leaks back verbatim on silence.
-        if text and text.strip(" .") == self.recognition_hints.strip(" ."):
+        if self._is_prompt_echo(text):
+
+            # The recogniser "heard" its own hint text in background
+            # noise. Never let that through: it contains "Glitch" and
+            # would wake GLITCH by itself.
+            if self.debug:
+
+                print("GLITCH IGNORED (prompt echo):", repr(text))
 
             return
+
+        print("GLITCH HEARD:", repr(text))
 
         if text:
 

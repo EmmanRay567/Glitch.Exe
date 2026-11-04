@@ -1,6 +1,4 @@
 import sys
-import winsound
-from pathlib import Path
 
 from PySide6.QtWidgets import QApplication
 from PySide6.QtCore import QTimer
@@ -9,65 +7,33 @@ from ui.main_window import GlitchWindow
 
 
 # ======================================================
-# AUDIO PATH
+# GLITCH.EXE // APPLICATION ENTRY POINT
+# ======================================================
+#
+# The old winsound reactor hum has been completely removed.
+#
+# Continuous ambience is now owned by ui/main_window.py:
+#
+#     audio/grid_ambience.wav
+#
+# through AmbientPlayer.
 # ======================================================
 
-BASE_DIR = Path(__file__).resolve().parent
-
-HUM_FILE = (
-    BASE_DIR
-    / "audio"
-    / "startup_hum.wav"
-)
-
-
-# ======================================================
-# REACTOR AUDIO
-# ======================================================
-
-def start_reactor_hum():
-    if HUM_FILE.exists():
-        winsound.PlaySound(
-            str(HUM_FILE),
-            winsound.SND_FILENAME
-            | winsound.SND_ASYNC
-            | winsound.SND_LOOP
-        )
-
-    else:
-        print(
-            f"GLITCH AUDIO ERROR: "
-            f"{HUM_FILE} not found."
-        )
-
-
-def stop_reactor_hum():
-    winsound.PlaySound(
-        None,
-        0
-    )
-
-
-# ======================================================
-# MAIN APPLICATION
-# ======================================================
 
 def main():
-    app = QApplication(sys.argv)
+
+    app = QApplication(
+        sys.argv
+    )
 
     window = GlitchWindow()
 
-    # Start reactor audio
-    start_reactor_hum()
-
-    # Stop audio when GLITCH closes
-    app.aboutToQuit.connect(
-        stop_reactor_hum
-    )
-
     window.show()
 
-    # Startup visual glitch
+    # ==================================================
+    # STARTUP VISUAL GLITCH
+    # ==================================================
+
     QTimer.singleShot(
         250,
         lambda: window.reactor.trigger_glitch(
@@ -86,4 +52,5 @@ def main():
 # ======================================================
 
 if __name__ == "__main__":
+
     main()

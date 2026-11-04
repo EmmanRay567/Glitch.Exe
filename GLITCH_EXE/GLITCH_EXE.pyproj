@@ -11,6 +11,7 @@
     <OutputPath>.</OutputPath>
     <Name>GLITCH_EXE</Name>
     <RootNamespace>GLITCH_EXE</RootNamespace>
+    <TestFramework>Pytest</TestFramework>
   </PropertyGroup>
   <PropertyGroup Condition=" '$(Configuration)' == 'Debug' ">
     <DebugSymbols>true</DebugSymbols>
@@ -22,6 +23,8 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="audio\make_ui_sounds.py" />
+    <Compile Include="audio\generate_grid_ambience.py" />
+    <Compile Include="audio\generate_auth_sounds.py" />
     <Compile Include="audio\__init__.py" />
     <Compile Include="audio\startup_hum.py" />
     <Compile Include="commands\base_command.py" />
@@ -44,6 +47,7 @@
     <Compile Include="core\assistant.py" />
     <Compile Include="core\event_bus.py" />
     <Compile Include="core\command_router.py" />
+    <Compile Include="core\perf_monitor.py" />
     <Compile Include="core\service_container.py" />
     <Compile Include="core\__init__.py" />
     <Compile Include="Data Folder\glitch_memory.db" />
@@ -73,6 +77,9 @@
     <Compile Include="services\auto_security_scan_service.py" />
     <Compile Include="services\biometric_engine.py" />
     <Compile Include="services\auth_session.py" />
+    <Compile Include="services\career_service.py" />
+    <Compile Include="services\auth_voice.py" />
+    <Compile Include="services\sports_service.py" />
     <Compile Include="services\security_action_service.py" />
     <Compile Include="services\security_alert_service.py" />
     <Compile Include="services\security_history_service.py" />
@@ -93,6 +100,9 @@
     <Compile Include="ui\hud_effects.py" />
     <Compile Include="ui\auth_overlay.py" />
     <Compile Include="ui\hologram_render.py" />
+    <Compile Include="ui\career_matrix_page.py" />
+    <Compile Include="ui\ambient_player.py" />
+    <Compile Include="ui\sports_holo_page.py" />
     <Compile Include="ui\security_findings_overlay.py" />
     <Compile Include="ui\security_alert_overlay.py" />
     <Compile Include="ui\security_matrix_widget.py" />
@@ -122,6 +132,10 @@
   </ItemGroup>
   <ItemGroup>
     <Content Include=".env" />
+    <Content Include="audio\auth_denied.wav" />
+    <Content Include="audio\auth_granted.wav" />
+    <Content Include="audio\auth_unknown.wav" />
+    <Content Include="audio\grid_ambience.wav" />
   </ItemGroup>
   <Import Project="$(MSBuildExtensionsPath32)\Microsoft\VisualStudio\v$(VisualStudioVersion)\Python Tools\Microsoft.PythonTools.targets" />
   <!-- Uncomment the CoreCompile target to enable the Build command in

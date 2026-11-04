@@ -49,6 +49,7 @@ from PySide6.QtGui import (
     QPainter,
     QPen,
     QPolygonF,
+    QRadialGradient,
 )
 
 from PySide6.QtWidgets import QPushButton, QWidget
@@ -72,6 +73,8 @@ PAGE_TITLES = {
     "SETTINGS": ("CONFIGURATION", "SYSTEM PARAMETERS UNLOCKED"),
     "SYSTEM_MATRIX": ("SYSTEM MATRIX", "HARDWARE DIAGNOSTICS ONLINE"),
     "SECURITY_MATRIX": ("SECURITY MATRIX", "CYBER DEFENSE GRID ONLINE"),
+    "SPORTS": ("SPORTS NEXUS", "LIVE TEAM INTEL UPLINK"),
+    "CAREER_MATRIX": ("CAREER MATRIX", "CAMPUS // JOBS // WORLD // STYLE"),
 }
 
 
@@ -667,6 +670,17 @@ class HandHologramOverlay(QWidget):
 
         self.enabled = True
 
+        # False hides the holographic hand (bones, joints, palm
+        # reticle). The fingertip pointer, button brackets and tap
+        # feedback stay, so pinch-clicking still works.
+        self.show_skeleton = True
+
+        # Hologram colours. Default GLITCH green; the Sports Nexus
+        # recolours it to the selected team (set_tint).
+        self._accent = ACCENT
+
+        self._light = WHITE_GREEN
+
         self._target = []
         self._display = []
 
@@ -698,6 +712,8 @@ class HandHologramOverlay(QWidget):
         self._hover_label = ""
 
         self._click_flash = None
+
+        self._last_dirty = None
 
         self._timer = QTimer(self)
         self._timer.setInterval(16)
@@ -766,6 +782,62 @@ class HandHologramOverlay(QWidget):
         if not self.enabled:
 
             self.clear_hand()
+
+            self._hover_target = None
+
+    def set_tint(self, color=None):
+
+        """Recolour the hand hologram, pointer and effects. color is a
+        QColor, '#rrggbb' or (r, g, b); None restores GLITCH green."""
+
+        if color is None:
+
+            self._accent = ACCENT
+
+            self._light = WHITE_GREEN
+
+        else:
+
+            if isinstance(color, QColor):
+
+                rgb = (color.red(), color.green(), color.blue())
+
+            elif isinstance(color, str):
+
+                value = color.lstrip("#")
+
+                rgb = tuple(int(value[i: i + 2], 16) for i in (0, 2, 4))
+
+            else:
+
+                rgb = tuple(int(c) for c in color[:3])
+
+            self._accent = rgb
+
+            # Pale highlight: the team colour mixed most of the way to white.
+            self._light = tuple(int(c + (255 - c) * 0.7) for c in rgb)
+
+        self.update()
+
+    def _c(self, alpha, rgb=None):
+
+        """Like _color(), but follows the current tint."""
+
+        if rgb is None or rgb == ACCENT:
+
+            rgb = self._accent
+
+        elif rgb == WHITE_GREEN:
+
+            rgb = self._light
+
+        return _color(alpha, rgb)
+
+    def set_hologram_visible(self, visible):
+
+        self.show_skeleton = bool(visible)
+
+        self.update()
 
     def set_landmarks(self, points):
 
@@ -966,11 +1038,102 @@ class HandHologramOverlay(QWidget):
 
             self._alpha = 0.0
 
+            self._last_dirty = None
+
             self.hide()
 
             return
 
-        self.update()
+        self._update_dirty()
+
+    def _update_dirty(self):
+
+        """
+        Repaint only the area around the hand, pointer and effects
+        (plus where they were last frame). This overlay covers the
+        whole window, so a full update() every 16 ms would force the
+        reactor and every panel underneath to repaint too: the single
+        biggest source of lag when your hand is in view.
+        """
+
+        if self._flash_direction != 0:
+
+            self._last_dirty = None
+
+            self.update()
+
+            return
+
+        w = self.width()
+
+        h = self.height()
+
+        dirty = None
+
+        def add(rect):
+
+            nonlocal dirty
+
+            dirty = rect if dirty is None else dirty.united(rect)
+
+        if self._display and self._alpha > 0.005:
+
+            xs = [x * w for x, _ in self._display]
+
+            ys = [y * h for _, y in self._display]
+
+            span = max(max(xs) - min(xs), max(ys) - min(ys))
+
+            pad = max(120.0, span * 0.9 + 110.0)
+
+            add(
+                QRectF(
+                    min(xs) - pad,
+                    min(ys) - pad,
+                    max(xs) - min(xs) + 2 * pad,
+                    max(ys) - min(ys) + 2 * pad,
+                )
+            )
+
+        if self._pointer_display is not None:
+
+            px = self._pointer_display[0] * w
+
+            py = self._pointer_display[1] * h
+
+            add(QRectF(px - 45, py - 45, 90, 90))
+
+        if self._hover_rect is not None and self._hover_alpha > 0.0:
+
+            add(self._hover_rect.adjusted(-30, -50, 260, 50))
+
+        if self._click_flash is not None:
+
+            add(self._click_flash[0].adjusted(-45, -45, 45, 45))
+
+        if self._pinch is not None:
+
+            px, py, _ = self._pinch
+
+            add(QRectF(px * w - 70, py * h - 70, 140, 140))
+
+        current = dirty.toAlignedRect() if dirty is not None else None
+
+        region = current
+
+        if self._last_dirty is not None:
+
+            region = (
+                self._last_dirty
+                if region is None
+                else region.united(self._last_dirty)
+            )
+
+        self._last_dirty = current
+
+        if region is not None:
+
+            self.update(region)
 
     # -----------------------------------------------------
     # Painting
@@ -1000,7 +1163,7 @@ class HandHologramOverlay(QWidget):
             for x, y in self._display
         ]
 
-        if len(points) >= 21 and a > 0.02:
+        if len(points) >= 21 and a > 0.02 and self.show_skeleton:
 
             self._paint_hand(painter, points, a)
 
@@ -1053,7 +1216,7 @@ class HandHologramOverlay(QWidget):
 
                 painter.setPen(
                     QPen(
-                        _color(
+                        self._c(
                             220 * (1.0 - t) * (1.0 - k * 0.2)
                         ),
                         3,
@@ -1087,7 +1250,7 @@ class HandHologramOverlay(QWidget):
             painter.setBrush(Qt.BrushStyle.NoBrush)
 
             painter.setPen(
-                QPen(_color(230 * (1.0 - t)), 2)
+                QPen(self._c(230 * (1.0 - t)), 2)
             )
 
             painter.drawEllipse(
@@ -1097,7 +1260,7 @@ class HandHologramOverlay(QWidget):
             )
 
             painter.setPen(
-                QPen(_color(180 * (1.0 - t)), 1)
+                QPen(self._c(180 * (1.0 - t)), 1)
             )
 
             painter.drawLine(
@@ -1140,7 +1303,7 @@ class HandHologramOverlay(QWidget):
 
         painter.setPen(Qt.PenStyle.NoPen)
 
-        painter.setBrush(QBrush(_color(26 * ha + 14 * pulse * ha)))
+        painter.setBrush(QBrush(self._c(26 * ha + 14 * pulse * ha)))
 
         painter.drawRect(grown)
 
@@ -1155,7 +1318,7 @@ class HandHologramOverlay(QWidget):
 
             painter.setPen(
                 QPen(
-                    _color(strength * ha, glow),
+                    self._c(strength * ha, glow),
                     width_px,
                     Qt.PenStyle.SolidLine,
                     Qt.PenCapStyle.SquareCap,
@@ -1212,13 +1375,13 @@ class HandHologramOverlay(QWidget):
 
             chip = QRectF(chip_x, chip_y, chip_w, chip_h)
 
-            painter.setPen(QPen(_color(150 * ha), 1))
+            painter.setPen(QPen(self._c(150 * ha), 1))
 
-            painter.setBrush(QBrush(_color(40 * ha, BACKGROUND)))
+            painter.setBrush(QBrush(self._c(40 * ha, BACKGROUND)))
 
             painter.drawRect(chip)
 
-            painter.setPen(QPen(_color(240 * ha, WHITE_GREEN)))
+            painter.setPen(QPen(self._c(240 * ha, WHITE_GREEN)))
 
             painter.drawText(
                 chip,
@@ -1244,15 +1407,15 @@ class HandHologramOverlay(QWidget):
 
         painter.setBrush(Qt.BrushStyle.NoBrush)
 
-        painter.setPen(QPen(_color(60 * a), 5))
+        painter.setPen(QPen(self._c(60 * a), 5))
 
         painter.drawEllipse(QPointF(cx, cy), radius, radius)
 
-        painter.setPen(QPen(_color((160 + 80 * lock) * a, WHITE_GREEN), 1.6))
+        painter.setPen(QPen(self._c((160 + 80 * lock) * a, WHITE_GREEN), 1.6))
 
         painter.drawEllipse(QPointF(cx, cy), radius, radius)
 
-        painter.setPen(QPen(_color(230 * a, WHITE_GREEN), 2))
+        painter.setPen(QPen(self._c(230 * a, WHITE_GREEN), 2))
 
         for offset in (0, 120, 240):
 
@@ -1269,7 +1432,7 @@ class HandHologramOverlay(QWidget):
 
         tick = 6.0
 
-        painter.setPen(QPen(_color(210 * a, WHITE_GREEN), 1.4))
+        painter.setPen(QPen(self._c(210 * a, WHITE_GREEN), 1.4))
 
         for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
 
@@ -1283,7 +1446,7 @@ class HandHologramOverlay(QWidget):
 
         painter.setPen(Qt.PenStyle.NoPen)
 
-        painter.setBrush(QBrush(_color(255 * a, WHITE_GREEN)))
+        painter.setBrush(QBrush(self._c(255 * a, WHITE_GREEN)))
 
         painter.drawEllipse(QPointF(cx, cy), 2.6 + 1.4 * lock, 2.6 + 1.4 * lock)
 
@@ -1301,9 +1464,9 @@ class HandHologramOverlay(QWidget):
 
         flash = rect.adjusted(-grow, -grow, grow, grow)
 
-        painter.setPen(QPen(_color(240 * (1.0 - t), WHITE_GREEN), 2))
+        painter.setPen(QPen(self._c(240 * (1.0 - t), WHITE_GREEN), 2))
 
-        painter.setBrush(QBrush(_color(70 * (1.0 - t) ** 2)))
+        painter.setBrush(QBrush(self._c(70 * (1.0 - t) ** 2)))
 
         painter.drawRect(flash)
 
@@ -1318,7 +1481,7 @@ class HandHologramOverlay(QWidget):
 
             painter.setPen(
                 QPen(
-                    _color(
+                    self._c(
                         line_alpha * a,
                         WHITE_GREEN
                         if line_width < 2
@@ -1340,7 +1503,7 @@ class HandHologramOverlay(QWidget):
         # Joints.
         painter.setPen(Qt.PenStyle.NoPen)
 
-        painter.setBrush(QBrush(_color(200 * a)))
+        painter.setBrush(QBrush(self._c(200 * a)))
 
         for point in points:
 
@@ -1356,13 +1519,13 @@ class HandHologramOverlay(QWidget):
             tip = points[index]
 
             painter.setPen(
-                QPen(_color(220 * a), 1.2)
+                QPen(self._c(220 * a), 1.2)
             )
 
             painter.drawEllipse(tip, 7, 7)
 
             painter.setPen(
-                QPen(_color(160 * a), 1.2)
+                QPen(self._c(160 * a), 1.2)
             )
 
             painter.drawArc(
@@ -1387,7 +1550,7 @@ class HandHologramOverlay(QWidget):
 
         radius = span * 0.9 + 10
 
-        dashed = QPen(_color(90 * a), 1)
+        dashed = QPen(self._c(90 * a), 1)
 
         dashed.setStyle(Qt.PenStyle.DashLine)
 
@@ -1395,7 +1558,7 @@ class HandHologramOverlay(QWidget):
 
         painter.drawEllipse(QPointF(cx, cy), radius, radius)
 
-        painter.setPen(QPen(_color(200 * a), 2))
+        painter.setPen(QPen(self._c(200 * a), 2))
 
         for offset in (0, 180):
 
@@ -1442,7 +1605,7 @@ class HandHologramOverlay(QWidget):
 
                 painter.setPen(
                     QPen(
-                        _color(
+                        self._c(
                             235 * strength * a * (1.0 - k * 0.25)
                         ),
                         3,
@@ -1487,6 +1650,7 @@ NAV_ORDER = (
     "APPS",
     "SYSTEM_MATRIX",
     "SECURITY_MATRIX",
+    "CAREER_MATRIX",
     "SETTINGS",
 )
 
@@ -1499,6 +1663,7 @@ NAV_LABELS = {
     "APPS": "APPS",
     "SYSTEM_MATRIX": "SYSTEM",
     "SECURITY_MATRIX": "SECURITY",
+    "CAREER_MATRIX": "CAREER",
     "SETTINGS": "SETTINGS",
 }
 
@@ -1513,6 +1678,7 @@ NAV_ATTRS = {
     "APPS": "apps_button",
     "SYSTEM_MATRIX": "matrix_button",
     "SECURITY_MATRIX": "security_button",
+    "CAREER_MATRIX": "career_button",
     "SETTINGS": "settings_button",
 }
 
@@ -1611,6 +1777,30 @@ PAGE_BRIEFS = {
             "Threat scans",
             "Findings review",
             "Defensive actions",
+        ],
+    },
+    "CAREER_MATRIX": {
+        "code": "MTX-03",
+        "summary": (
+            "Career Matrix. Campus events and news, job leads, "
+            "local and world headlines, and a green-fit Customizer."
+        ),
+        "functions": [
+            "Campus intel",
+            "Job leads",
+            "Outfit Customizer",
+        ],
+    },
+    "SPORTS": {
+        "code": "SPX-01",
+        "summary": (
+            "Sports Nexus. Live intel on your teams: records, "
+            "schedule, injuries and stat leaders."
+        ),
+        "functions": [
+            "Team holograms",
+            "Schedule + results",
+            "Injury report",
         ],
     },
     "SETTINGS": {
@@ -1815,6 +2005,21 @@ def _draw_nav_glyph(painter, key, cx, cy, s, color):
                     QPointF(cx + a * s, cy + b * s),
                     QPointF(cx + c * s, cy + d * s),
                 )
+
+    elif key == "CAREER_MATRIX":
+
+        painter.drawRect(
+            QRectF(cx - 0.9 * s, cy - 0.45 * s, 1.8 * s, 1.25 * s)
+        )
+
+        painter.drawRect(
+            QRectF(cx - 0.35 * s, cy - 0.8 * s, 0.7 * s, 0.35 * s)
+        )
+
+        painter.drawLine(
+            QPointF(cx - 0.9 * s, cy + 0.1 * s),
+            QPointF(cx + 0.9 * s, cy + 0.1 * s),
+        )
 
     elif key == "SECURITY_MATRIX":
 
@@ -2113,6 +2318,85 @@ def _build_model(key):
 
         return lines
 
+    if key == "CAREER_MATRIX":
+
+        lines = []
+
+        # Masked head (lat rings) with a visor band.
+        for k in range(-3, 4):
+
+            y = 0.55 + k * 0.11
+
+            r = 0.34 * math.sqrt(max(0.0, 1 - ((y - 0.55) / 0.42) ** 2))
+
+            lines.append(_ring(r, 28, y))
+
+        lines.append(_tilt(_ring(0.36, 28, 0.58), ax=0.12))
+
+        lines.append(_tilt(_ring(0.35, 28, 0.50), ax=0.12))
+
+        # Hood: an arch over and behind the head.
+        for scale in (1.0, 0.9):
+
+            hood = []
+
+            for i in range(25):
+
+                t = math.pi * i / 24
+
+                hood.append((math.cos(t) * 0.5 * scale, 0.55 + math.sin(t) * 0.55 * scale, -0.08))
+
+            lines.append(hood)
+
+        lines.append([(-0.5, 0.55, -0.08), (-0.42, 0.0, 0.1)])
+
+        lines.append([(0.5, 0.55, -0.08), (0.42, 0.0, 0.1)])
+
+        # Hoodie body: relaxed shoulders, rib band at the waist.
+        for y, r in ((0.0, 0.48), (-0.18, 0.76), (-0.42, 0.8), (-0.68, 0.76), (-0.76, 0.74)):
+
+            lines.append(_ring(r, 36, y))
+
+        # Drawstrings and kangaroo pocket on the front.
+        lines.append([(-0.1, 0.0, 0.47), (-0.12, -0.3, 0.72)])
+
+        lines.append([(0.1, 0.0, 0.47), (0.12, -0.3, 0.72)])
+
+        lines.append([(-0.34, -0.45, 0.72), (0.34, -0.45, 0.72), (0.42, -0.68, 0.66), (-0.42, -0.68, 0.66), (-0.34, -0.45, 0.72)])
+
+        return lines
+
+    if key == "SPORTS":
+
+        lines = []
+
+        a, b = 1.2, 0.68
+
+        for k in range(-3, 4):
+
+            x = a * k / 3.6
+
+            r = b * math.sqrt(max(0.0, 1 - (x / a) ** 2))
+
+            lines.append([(x, r * math.cos(t * math.pi / 18), r * math.sin(t * math.pi / 18)) for t in range(37)])
+
+        for j in range(6):
+
+            phi = j * math.pi / 3
+
+            lines.append(
+                [
+                    (
+                        -a + 2 * a * i / 30,
+                        b * math.sqrt(max(0.0, 1 - ((-a + 2 * a * i / 30) / a) ** 2)) * math.cos(phi),
+                        b * math.sqrt(max(0.0, 1 - ((-a + 2 * a * i / 30) / a) ** 2)) * math.sin(phi),
+                    )
+                    for i in range(31)
+                ]
+            )
+
+        return lines
+
     if key == "SETTINGS":
 
         outline = []
@@ -2319,7 +2603,7 @@ class HoloNavRail(QWidget):
 
         self._timer = QTimer(self)
 
-        self._timer.setInterval(33)
+        self._timer.setInterval(40)
 
         self._timer.timeout.connect(self._tick)
 
@@ -2336,6 +2620,18 @@ class HoloNavRail(QWidget):
         key = str(key or "").strip().upper()
 
         if key not in self.buttons:
+
+            # A page with no nav node (e.g. the Sports Nexus):
+            # nothing is highlighted.
+            self.active_key = ""
+
+            for button in self.buttons.values():
+
+                button.active = False
+
+            self._carriage = None
+
+            self._carriage_target = None
 
             return
 
@@ -2429,7 +2725,9 @@ class HoloNavRail(QWidget):
 
             self._carriage = (l0 + (l1 - l0) * 0.24, r0 + (r1 - r0) * 0.24)
 
-        self.update()
+        # Only the baseline strip animates (shimmer + carriage); the
+        # nodes repaint themselves when their glow changes.
+        self.update(0, max(0, self.height() - 26), self.width(), 26)
 
     def paintEvent(self, event):
 
@@ -2559,7 +2857,7 @@ class HoloProjector(QWidget):
 
         self._timer = QTimer(self)
 
-        self._timer.setInterval(33)
+        self._timer.setInterval(40)
 
         self._timer.timeout.connect(self._tick)
 
@@ -3087,3 +3385,409 @@ class HoloProjector(QWidget):
             painter.setPen(QPen(_color(235 * near * flicker, WHITE_GREEN), 1.1))
 
             painter.drawPolyline(polygon)
+
+
+# =========================================================
+# CINEMATIC WARP TRANSITION (Sports Nexus)
+# =========================================================
+
+class WarpTransitionOverlay(QWidget):
+
+    """
+    Hyperspace-style jump: light streaks accelerate out of the centre,
+    tunnel rings rush past, a flash peaks (the page switches there),
+    then everything settles while the destination name decodes.
+    reverse=True plays it inward (jumping back out).
+    """
+
+    DURATION_S = 1.25
+
+    PEAK = 0.46
+
+    STREAKS = 170
+
+    def __init__(self, parent=None):
+
+        super().__init__(parent)
+
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+
+        self._start = 0.0
+
+        self._playing = False
+
+        self._peak_done = True
+
+        self._on_peak = None
+
+        self._reverse = False
+
+        self._title = ""
+
+        self._subtitle = ""
+
+        self._tint = QColor(*ACCENT)
+
+        self._streaks = []
+
+        self._timer = QTimer(self)
+
+        self._timer.setInterval(16)
+
+        self._timer.timeout.connect(self._tick)
+
+        self.hide()
+
+    def is_playing(self):
+
+        return self._playing
+
+    def play(self, title, subtitle="", reverse=False, tint=None, on_peak=None):
+
+        parent = self.parentWidget()
+
+        if parent is not None:
+
+            self.setGeometry(parent.rect())
+
+        self._title = title or ""
+
+        self._subtitle = subtitle or ""
+
+        self._reverse = bool(reverse)
+
+        self._tint = QColor(tint) if tint is not None else QColor(*ACCENT)
+
+        self._on_peak = on_peak
+
+        self._peak_done = False
+
+        rng = random.Random()
+
+        self._streaks = [
+            (
+                rng.uniform(0, 2 * math.pi),
+                rng.uniform(0.02, 0.35),
+                rng.uniform(0.6, 1.6),
+                rng.uniform(0.04, 0.16),
+                rng.random() < 0.25,
+            )
+            for _ in range(self.STREAKS)
+        ]
+
+        self._start = time.perf_counter()
+
+        self._playing = True
+
+        self.show()
+
+        self.raise_()
+
+        self._timer.start()
+
+    def _tick(self):
+
+        t = (time.perf_counter() - self._start) / self.DURATION_S
+
+        if not self._peak_done and t >= self.PEAK:
+
+            self._peak_done = True
+
+            callback, self._on_peak = self._on_peak, None
+
+            if callback is not None:
+
+                try:
+
+                    callback()
+
+                except Exception as error:
+
+                    print("WARP CALLBACK ERROR:", error)
+
+            self.raise_()
+
+        if t >= 1.0:
+
+            self._timer.stop()
+
+            self._playing = False
+
+            self.hide()
+
+            return
+
+        self.update()
+
+    def paintEvent(self, event):
+
+        w, h = self.width(), self.height()
+
+        if w <= 0 or h <= 0 or not self._playing:
+
+            return
+
+        t = _clamp((time.perf_counter() - self._start) / self.DURATION_S)
+
+        peak = self.PEAK
+
+        painter = QPainter(self)
+
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        cx, cy = w / 2, h / 2
+
+        reach = math.hypot(cx, cy)
+
+        tint = self._tint
+
+        tr, tg, tb = tint.red(), tint.green(), tint.blue()
+
+        # Speed builds to the peak, then bleeds off. `distance` is the
+        # integral of speed, so streaks keep flowing (and wrap around)
+        # instead of all leaving the screen at once.
+        if t < peak:
+
+            speed = (t / peak) ** 2.2
+
+            distance = peak * (t / peak) ** 3.2 / 3.2
+
+            fade = 1.0
+
+        else:
+
+            settle = _ease_out((t - peak) / (1 - peak))
+
+            speed = 1.0 - 0.75 * settle
+
+            distance = peak / 3.2 + (t - peak) * (1.0 - 0.375 * settle)
+
+            fade = 1.0 - settle
+
+        # Darken the HUD into the jump, release after.
+        veil = 215 * (_clamp(t / peak) if t < peak else fade)
+
+        painter.fillRect(self.rect(), QColor(1, 4, 3, int(veil)))
+
+        # Streaks.
+        for angle, r0, velocity, length, bright in self._streaks:
+
+            progress = (r0 + distance * velocity * 6.0) % 1.25
+
+            if self._reverse:
+
+                progress = 1.25 - progress
+
+            r1 = progress * reach
+
+            stretch = length * reach * (0.15 + 2.6 * speed) * (0.4 + progress)
+
+            r2 = r1 + (stretch if not self._reverse else -stretch)
+
+            r2 = max(0.0, r2)
+
+            ca, sa = math.cos(angle), math.sin(angle)
+
+            # Streaks are dim near the centre (far away) and bright as
+            # they rush past the edges.
+            depth = min(1.0, 0.2 + progress)
+
+            alpha = (235 if bright else 130) * fade * min(1.0, 0.2 + speed) * depth
+
+            color = QColor(235, 255, 240, int(alpha)) if bright else QColor(tr, tg, tb, int(alpha))
+
+            painter.setPen(QPen(color, (2.4 if bright else 1.3) * (0.6 + depth * 0.6), Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+
+            painter.drawLine(QPointF(cx + ca * r1, cy + sa * r1), QPointF(cx + ca * r2, cy + sa * r2))
+
+        # Tunnel rings rushing past.
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+
+        for k in range(6):
+
+            phase = (distance * 3.0 + k / 6.0) % 1.0
+
+            if self._reverse:
+
+                phase = 1.0 - phase
+
+            radius = (phase ** 2) * reach * 1.2
+
+            alpha = 140 * (1 - phase) * fade * min(1.0, speed * 1.5)
+
+            painter.setPen(QPen(QColor(tr, tg, tb, int(alpha)), 1.5))
+
+            painter.drawEllipse(QPointF(cx, cy), radius, radius * 0.62)
+
+        # Core bloom + flash at the peak.
+        bloom = math.exp(-((t - peak) / 0.09) ** 2)
+
+        core = reach * (0.08 + 0.55 * bloom)
+
+        gradient = QRadialGradient(QPointF(cx, cy), max(1.0, core))
+
+        gradient.setColorAt(0.0, QColor(255, 255, 255, int(255 * bloom)))
+
+        gradient.setColorAt(0.35, QColor(tr, tg, tb, int(200 * bloom)))
+
+        gradient.setColorAt(1.0, QColor(tr, tg, tb, 0))
+
+        painter.setPen(Qt.PenStyle.NoPen)
+
+        painter.setBrush(QBrush(gradient))
+
+        painter.drawEllipse(QPointF(cx, cy), core, core)
+
+        if abs(t - peak) < 0.05:
+
+            painter.fillRect(self.rect(), QColor(230, 255, 240, int(120 * (1 - abs(t - peak) / 0.05))))
+
+        # Shockwave after the peak.
+        if t > peak:
+
+            shock = _ease_out((t - peak) / (1 - peak))
+
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+
+            painter.setPen(QPen(QColor(tr, tg, tb, int(200 * (1 - shock))), 3))
+
+            painter.drawEllipse(QPointF(cx, cy), shock * reach, shock * reach * 0.62)
+
+        # Destination readout.
+        if t > peak * 0.7 and self._title:
+
+            text_alpha = _clamp((t - peak * 0.7) / 0.12) * (1 - _clamp((t - 0.82) / 0.18))
+
+            progress = _clamp((t - peak * 0.7) / 0.4)
+
+            title_font = QFont("Consolas")
+
+            title_font.setPixelSize(max(18, int(h * 0.05)))
+
+            title_font.setBold(True)
+
+            title_font.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 8)
+
+            painter.setFont(title_font)
+
+            painter.setPen(QColor(235, 255, 240, int(255 * text_alpha)))
+
+            painter.drawText(
+                QRectF(0, cy - h * 0.05, w, h * 0.07),
+                Qt.AlignmentFlag.AlignCenter,
+                HudTransitionOverlay._decode(self._title, progress),
+            )
+
+            sub_font = QFont("Consolas")
+
+            sub_font.setPixelSize(max(10, int(h * 0.016)))
+
+            sub_font.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 4)
+
+            painter.setFont(sub_font)
+
+            painter.setPen(QColor(tr, tg, tb, int(220 * text_alpha)))
+
+            painter.drawText(
+                QRectF(0, cy + h * 0.025, w, h * 0.04),
+                Qt.AlignmentFlag.AlignCenter,
+                HudTransitionOverlay._decode(self._subtitle, progress, 0.1),
+            )
+
+        painter.end()
+
+
+# =========================================================
+# WHOOSH SOUND (generated, no audio files needed)
+# =========================================================
+
+def make_whoosh_wav(path, reverse=False, duration=1.25, sample_rate=44100):
+
+    """
+    Synthesize a cinematic whoosh: filtered noise sweeping up to a
+    peak, a sub-bass impact at the peak, and a left-to-right pan.
+    Written once to `path` (16-bit stereo WAV).
+    """
+
+    import wave
+
+    import numpy as np
+
+    n = int(duration * sample_rate)
+
+    t = np.arange(n) / sample_rate
+
+    peak = 0.46 * duration
+
+    rng = np.random.default_rng(404)
+
+    noise = rng.standard_normal(n)
+
+    # Cutoff sweeps 250 Hz -> 7 kHz at the peak -> 900 Hz.
+    rise = np.clip(t / peak, 0, 1) ** 2.2
+
+    fall = np.clip((t - peak) / (duration - peak), 0, 1)
+
+    cutoff = np.where(t < peak, 250 + 6750 * rise, 7000 - 6100 * np.sqrt(fall))
+
+    alpha = 1 - np.exp(-2 * np.pi * cutoff / sample_rate)
+
+    filtered = np.empty(n)
+
+    state1 = state2 = 0.0
+
+    for i in range(n):
+
+        state1 += alpha[i] * (noise[i] - state1)
+
+        state2 += alpha[i] * (state1 - state2)
+
+        filtered[i] = state2
+
+    envelope = np.where(
+        t < peak,
+        (t / peak) ** 3,
+        np.exp(-(t - peak) * 5.5),
+    )
+
+    body = filtered / (np.max(np.abs(filtered)) or 1) * envelope
+
+    # Sub impact at the peak.
+    after = np.clip(t - peak, 0, None)
+
+    boom = np.sin(2 * np.pi * (48 - 18 * np.clip(after * 3, 0, 1)) * after) * np.exp(-after * 7) * (t >= peak)
+
+    # Rising shimmer tone into the peak.
+    shimmer = np.sin(2 * np.pi * (300 + 1500 * rise) * t) * 0.06 * (t < peak) * rise
+
+    mono = 0.8 * body + 0.55 * boom + shimmer
+
+    if reverse:
+
+        mono = mono[::-1]
+
+    pan = np.clip(t / duration, 0, 1)
+
+    left = mono * np.cos(pan * np.pi / 2)
+
+    right = mono * np.sin(pan * np.pi / 2)
+
+    stereo = np.stack([left, right], axis=1)
+
+    stereo = stereo / (np.max(np.abs(stereo)) or 1) * 0.85
+
+    data = (stereo * 32767).astype("<i2").tobytes()
+
+    with wave.open(str(path), "wb") as handle:
+
+        handle.setnchannels(2)
+
+        handle.setsampwidth(2)
+
+        handle.setframerate(sample_rate)
+
+        handle.writeframes(data)
+
+    return path

@@ -21,11 +21,14 @@ Public interface kept: speak(text), stop(), speech_started,
 speech_finished, voice_error.
 """
 
+import hashlib
 import os
 import queue
 import re
 import threading
 import time
+
+from pathlib import Path
 
 import numpy as np
 import sounddevice as sd
@@ -84,6 +87,13 @@ class VoiceEngine(QObject):
     _playback_ended = Signal(int)
 
     SAMPLE_RATE = 24000
+
+    # Audio collected before GLITCH starts speaking (absorbs network
+    # jitter) and the sound card buffer size. Bigger = smoother but a
+    # touch later.
+    PREBUFFER_S = 0.35
+
+    OUTPUT_LATENCY_S = 0.15
 
     # Very short sentences ("Sir." / "Right.") are merged with the next
     # one so the voice doesn't sound chopped up.
@@ -179,6 +189,15 @@ character.
         # without a matching speech_finished yet).
         self._public_speaking = False
 
+        # Fixed phrases ("Scanning user.") are cached as raw PCM so they
+        # play instantly and don't cost an API call every time.
+        self.cache_dir = Path(
+            os.getenv(
+                "GLITCH_VOICE_CACHE",
+                Path(__file__).resolve().parent.parent / "data" / "voice_cache",
+            )
+        )
+
         self._playback_started.connect(
             self._on_playback_started
         )
@@ -197,22 +216,106 @@ character.
 
     def speak(
         self,
-        text
+        text,
+        cache=False
     ):
 
-        """Say a complete piece of text (interrupts anything playing)."""
+        """Say a complete piece of text (interrupts anything playing).
+
+        cache=True keeps the rendered audio on disk, so the next time
+        the exact same line is said it plays instantly (no network)."""
 
         if not text or not str(text).strip():
             return
 
-        self.begin_stream()
+        text = str(text)
 
-        self.feed(str(text))
+        record_path = None
+
+        if cache:
+
+            path = self._cache_path(text)
+
+            if path.exists():
+
+                try:
+
+                    self._play_pcm(path.read_bytes())
+
+                    return
+
+                except Exception as error:
+
+                    print(f"GLITCH VOICE // cache read failed: {error}")
+
+            record_path = path
+
+        self.begin_stream(record_path=record_path)
+
+        self.feed(text)
 
         self.end_stream()
 
 
-    def begin_stream(self):
+    def prefetch(
+        self,
+        phrases
+    ):
+
+        """Render phrases into the cache in the background (no playback)."""
+
+        missing = [
+            str(phrase)
+            for phrase in phrases
+            if phrase and not self._cache_path(str(phrase)).exists()
+        ]
+
+        if not missing:
+
+            return
+
+        def work():
+
+            for phrase in missing:
+
+                path = self._cache_path(phrase)
+
+                if path.exists():
+
+                    continue
+
+                try:
+
+                    pcm = bytearray()
+
+                    with (
+                        self.client.audio.speech
+                        .with_streaming_response
+                        .create(
+                            model=self.model,
+                            voice=self.voice,
+                            input=_clean_for_speech(phrase),
+                            instructions=self.instructions,
+                            response_format="pcm",
+                        )
+                    ) as response:
+
+                        for data in response.iter_bytes(4800):
+
+                            pcm.extend(data)
+
+                    self._write_cache(path, bytes(pcm))
+
+                except Exception as error:
+
+                    print(f"GLITCH VOICE // prefetch failed: {error}")
+
+                    return
+
+        threading.Thread(target=work, daemon=True).start()
+
+
+    def begin_stream(self, record_path=None):
 
         """Start an utterance whose text will arrive in pieces."""
 
@@ -242,7 +345,7 @@ character.
 
         threading.Thread(
             target=self._produce_audio,
-            args=(generation, text_queue, pcm_queue),
+            args=(generation, text_queue, pcm_queue, record_path),
             daemon=True,
         ).start()
 
@@ -429,8 +532,13 @@ character.
         self,
         generation,
         text_queue,
-        pcm_queue
+        pcm_queue,
+        record_path=None
     ):
+
+        recorded = bytearray() if record_path is not None else None
+
+        complete = False
 
         try:
 
@@ -445,6 +553,8 @@ character.
                     continue
 
                 if chunk is None:
+
+                    complete = True
 
                     break
 
@@ -476,11 +586,20 @@ character.
 
                         leftover = data[cut:]
 
+                        if recorded is not None and cut:
+
+                            recorded.extend(data[:cut])
+
                         if cut and not self._put(
                             pcm_queue, data[:cut], generation
                         ):
 
                             break
+
+            # Only cache a line that was rendered all the way through.
+            if complete and recorded and self._current(generation):
+
+                self._write_cache(record_path, bytes(recorded))
 
         except Exception as error:
 
@@ -499,6 +618,96 @@ character.
             except queue.Full:
 
                 pass
+
+
+    # ======================================================
+    # PHRASE CACHE
+    # ======================================================
+
+    def _cache_path(
+        self,
+        text
+    ):
+
+        key = "|".join(
+            (self.model, self.voice, self.instructions, _clean_for_speech(text))
+        )
+
+        digest = hashlib.sha1(key.encode("utf-8")).hexdigest()[:20]
+
+        return self.cache_dir / f"{digest}.pcm"
+
+
+    def _write_cache(
+        self,
+        path,
+        pcm
+    ):
+
+        if not pcm:
+
+            return
+
+        try:
+
+            path.parent.mkdir(parents=True, exist_ok=True)
+
+            temp = path.with_suffix(f".{threading.get_ident()}.tmp")
+
+            temp.write_bytes(pcm)
+
+            os.replace(temp, path)
+
+        except Exception as error:
+
+            print(f"GLITCH VOICE // cache write failed: {error}")
+
+
+    def _play_pcm(
+        self,
+        pcm
+    ):
+
+        """Play already-rendered 24 kHz PCM through the normal player
+        (same signals, echo level and interrupt behaviour as speech)."""
+
+        self._cancel(emit_finished=True)
+
+        with self._lock:
+
+            self._generation += 1
+
+            generation = self._generation
+
+            self._active = True
+
+        pcm_queue = queue.Queue(maxsize=400)
+
+        def feed():
+
+            step = 4800
+
+            for start in range(0, len(pcm) - len(pcm) % 2, step):
+
+                if not self._put(pcm_queue, pcm[start:start + step], generation):
+
+                    break
+
+            try:
+
+                pcm_queue.put(None, timeout=1.0)
+
+            except queue.Full:
+
+                pass
+
+        threading.Thread(target=feed, daemon=True).start()
+
+        threading.Thread(
+            target=self._play_audio_stream,
+            args=(generation, pcm_queue),
+            daemon=True,
+        ).start()
 
 
     def _put(
@@ -540,19 +749,71 @@ character.
 
         started = False
 
+        # Jitter buffer: collect a little audio before starting, so a
+        # slow network moment doesn't make the voice drop in and out.
+        pending = []
+
+        pending_bytes = 0
+
+        prebuffer_bytes = int(self.SAMPLE_RATE * 2 * self.PREBUFFER_S)
+
+        finished = False
+
         try:
 
             while self._current(generation):
 
-                try:
+                if stream is None and pending_bytes < prebuffer_bytes and not finished:
 
-                    data = pcm_queue.get(timeout=0.25)
+                    try:
 
-                except queue.Empty:
+                        data = pcm_queue.get(timeout=0.25)
+
+                    except queue.Empty:
+
+                        continue
+
+                    if data is None:
+
+                        finished = True
+
+                    else:
+
+                        pending.append(data)
+
+                        pending_bytes += len(data)
 
                     continue
 
-                if data is None or not self._current(generation):
+                if stream is None:
+
+                    if not pending:
+
+                        break
+
+                    data = b"".join(pending)
+
+                    pending = []
+
+                elif finished:
+
+                    break
+
+                else:
+
+                    try:
+
+                        data = pcm_queue.get(timeout=0.25)
+
+                    except queue.Empty:
+
+                        continue
+
+                    if data is None:
+
+                        break
+
+                if not self._current(generation):
 
                     break
 
@@ -591,6 +852,10 @@ character.
                     data = self._resample(samples, rate).tobytes()
 
                 stream.write(data)
+
+                if finished and stream is not None:
+
+                    break
 
             if stream is not None and self._current(generation):
 
@@ -646,7 +911,7 @@ character.
                     samplerate=self.SAMPLE_RATE,
                     channels=1,
                     dtype="int16",
-                    latency="low",
+                    latency=self.OUTPUT_LATENCY_S,
                 ),
                 self.SAMPLE_RATE,
             )
@@ -667,7 +932,7 @@ character.
                     samplerate=rate,
                     channels=1,
                     dtype="int16",
-                    latency="low",
+                    latency=self.OUTPUT_LATENCY_S,
                 ),
                 rate,
             )

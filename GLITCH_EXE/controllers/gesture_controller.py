@@ -18,6 +18,7 @@ SECTION_DECK = (
 MATRIX_PARENT = {
     "SYSTEM_MATRIX": "HOME",
     "SECURITY_MATRIX": "HOME",
+    "CAREER_MATRIX": "HOME",
 }
 
 
@@ -35,6 +36,8 @@ class GestureController:
         SYSTEM_MATRIX
           <- / ->
         SECURITY_MATRIX
+          <- / ->
+        CAREER_MATRIX
 
     Pinch-click:
         The holographic fingertip hovers a HUD button and a pinch
@@ -165,6 +168,14 @@ class GestureController:
                 current_mode
             )
 
+        elif current_mode == "SECURITY_MATRIX":
+
+            handled = self._navigate(
+                "CAREER_MATRIX",
+                "SWIPE_LEFT",
+                current_mode
+            )
+
         self.publish_gesture_event(
             "SWIPE_LEFT",
             current_mode,
@@ -191,7 +202,15 @@ class GestureController:
 
         handled = False
 
-        if current_mode == "SECURITY_MATRIX":
+        if current_mode == "CAREER_MATRIX":
+
+            handled = self._navigate(
+                "SECURITY_MATRIX",
+                "SWIPE_RIGHT",
+                current_mode
+            )
+
+        elif current_mode == "SECURITY_MATRIX":
 
             handled = self._navigate(
                 "SYSTEM_MATRIX",

@@ -26,6 +26,8 @@ alpha, ready for QImage.Format_RGBA8888.
 
 from __future__ import annotations
 
+import os
+
 import threading
 import urllib.request
 from pathlib import Path
@@ -80,14 +82,20 @@ class HologramRenderer:
 
         try:
 
-            self._cascade = cv2.CascadeClassifier(
-                cv2.data.haarcascades
-                + "haarcascade_frontalface_default.xml"
+            cascade_path = os.path.join(
+                getattr(getattr(cv2, "data", None), "haarcascades", "") or "",
+                "haarcascade_frontalface_default.xml",
             )
 
-            if self._cascade.empty():
+            # Some OpenCV builds (e.g. 5.x) ship without the cascade
+            # files; check first so OpenCV doesn't log an error.
+            if os.path.isfile(cascade_path):
 
-                self._cascade = None
+                self._cascade = cv2.CascadeClassifier(cascade_path)
+
+                if self._cascade.empty():
+
+                    self._cascade = None
 
         except Exception:
 

@@ -33,6 +33,12 @@ class ContextController:
         self.last_weather_topic = None
         self.last_weather_day = None
 
+        # Set by the main window once the Sports Nexus exists.
+        self.sports_service = None
+
+        # Set by the main window once the Career Matrix exists.
+        self.career_service = None
+
     # ---------------------------------------------------------
     # SYSTEM MEMORY
     # ---------------------------------------------------------
@@ -462,6 +468,50 @@ class ContextController:
 
                 context_sections.append(
                     adaptive_block
+                )
+
+
+        if self.career_service is not None:
+
+            try:
+
+                career_block = (
+                    self.career_service
+                    .context_for(
+                        command
+                    )
+                )
+
+            except Exception:
+
+                career_block = ""
+
+            if career_block:
+
+                context_sections.append(
+                    career_block
+                )
+
+
+        if self.sports_service is not None:
+
+            try:
+
+                sports_block = (
+                    self.sports_service
+                    .context_for(
+                        command
+                    )
+                )
+
+            except Exception:
+
+                sports_block = ""
+
+            if sports_block:
+
+                context_sections.append(
+                    sports_block
                 )
 
 

@@ -1,4 +1,5 @@
 import os
+import re
 import json
 import math
 import time
@@ -21,6 +22,12 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QFrame,
     QGraphicsOpacityEffect,
+    QApplication,
+    QAbstractButton,
+    QAbstractSlider,
+    QAbstractSpinBox,
+    QComboBox,
+    QGraphicsColorizeEffect,
 )
 
 from PySide6.QtCore import (
@@ -32,6 +39,7 @@ from PySide6.QtCore import (
     QPointF,
     QRect,
     QRectF,
+    QEvent,
     Qt,
     QUrl,
     QPropertyAnimation,
@@ -43,6 +51,8 @@ from PySide6.QtGui import (
     QColor,
     QPen,
     QBrush,
+    QKeySequence,
+    QShortcut,
 )
 
 from PySide6.QtMultimedia import (
@@ -54,6 +64,7 @@ from core.assistant import GlitchAssistant
 from core.event_bus import EventBus
 from core.command_router import CommandRouter
 from core.service_container import ServiceContainer
+from core.perf_monitor import PerfMonitor
 from models.intent import InteractionIntent
 from commands.navigation_commands import NavigationCommand
 from controllers.navigation_controller import NavigationController
@@ -93,6 +104,9 @@ from ui.status_panel import StatusPanel
 from ui.command_bar import CommandBar
 from ui.response_panel import ResponsePanel
 from ui.auth_overlay import AuthOverlay
+from services.auth_voice import AuthVoice
+from services.career_service import CareerService
+from ui.career_matrix_page import CareerMatrixPage
 from ui.security_alert_overlay import SecurityAlertOverlay
 from ui.security_findings_overlay import SecurityFindingsOverlay
 
@@ -104,8 +118,13 @@ from ui.hud_effects import (
     HandHologramOverlay,
     HoloNavRail,
     HoloProjector,
+    WarpTransitionOverlay,
+    make_whoosh_wav,
     PAGE_TITLES,
 )
+from services.sports_service import SportsService
+from ui.sports_holo_page import SportsHoloPage, SportsBackdrop
+from ui.ambient_player import AmbientPlayer
 
 
 # =========================================================
@@ -540,6 +559,19 @@ class GlitchWindow(QMainWindow):
 
             "weather_location":
                 "",
+
+            # Hand control: camera tracking for swipes / pinch / pointer.
+            "gesture_control_enabled":
+                True,
+
+            # The holographic hand drawn over the HUD (visual only).
+            "hand_hologram_enabled":
+                True,
+
+            # Freezes the animated reactor background into a still
+            # image: the biggest single saving on slower machines.
+            "performance_mode":
+                False,
         }
 
 
@@ -550,6 +582,20 @@ class GlitchWindow(QMainWindow):
             self.settings_data[
                 "voice_enabled"
             ]
+        )
+
+        self.gesture_control_enabled = bool(
+            self.settings_data.get(
+                "gesture_control_enabled",
+                True
+            )
+        )
+
+        self.hand_hologram_enabled = bool(
+            self.settings_data.get(
+                "hand_hologram_enabled",
+                True
+            )
         )
 
 
@@ -1172,6 +1218,15 @@ class GlitchWindow(QMainWindow):
         self.reactor.lower()
 
 
+        # Team-coloured background that replaces the green reactor
+        # backdrop while the Sports Nexus is open.
+        self.sports_backdrop = (
+            SportsBackdrop(
+                self.central_widget
+            )
+        )
+
+
         # =================================================
         # HOLOGRAPHIC NAVIGATION (replaces the old sidebar)
         # =================================================
@@ -1412,6 +1467,76 @@ class GlitchWindow(QMainWindow):
         )
 
 
+        # =================================================
+        # SPORTS NEXUS (double-tap / "Glitch, show me sports")
+        # =================================================
+
+        self.sports_service = (
+            SportsService()
+        )
+
+        self.sports_page = (
+            SportsHoloPage(
+                self.sports_service
+            )
+        )
+
+        # Recolour the HUD when you switch teams inside the Nexus.
+        self.sports_page.team_changed.connect(
+            lambda key: self.update_sports_theme(self.current_mode)
+        )
+
+        self.sports_service.team_updated.connect(
+            lambda key, data: self.update_sports_theme(self.current_mode)
+        )
+
+        # Team questions to the AI get the live sports data.
+        self.context_controller.sports_service = (
+            self.sports_service
+        )
+
+        # Warm the cache in the background so the page opens instantly.
+        QTimer.singleShot(
+            4000,
+            self.sports_service.refresh
+        )
+
+        # =================================================
+        # CAREER MATRIX (campus, jobs, world news, style)
+        # =================================================
+
+        self.career_service = (
+            CareerService()
+        )
+
+        self.career_page = (
+            CareerMatrixPage(
+                self.career_service
+            )
+        )
+
+        # Career questions to the AI get the live Career Matrix data.
+        self.context_controller.career_service = (
+            self.career_service
+        )
+
+        # Outfit picks / product search results are spoken.
+        self.career_page.announce.connect(
+            self.say_confirmation
+        )
+
+        QTimer.singleShot(
+            6000,
+            self.career_service.refresh
+        )
+
+        self._pre_sports_mode = "HOME"
+
+        self._warp_in_progress = False
+
+        self._last_empty_tap = 0.0
+
+
         for page in [
 
             self.home_page,
@@ -1431,6 +1556,10 @@ class GlitchWindow(QMainWindow):
             self.apps_page,
 
             self.settings_page,
+
+            self.sports_page,
+
+            self.career_page,
 
         ]:
 
@@ -1489,6 +1618,50 @@ class GlitchWindow(QMainWindow):
             HudTransitionOverlay(
                 self.central_widget
             )
+        )
+
+
+        # Cinematic jump into / out of the Sports Nexus.
+        self.warp_overlay = (
+            WarpTransitionOverlay(
+                self.central_widget
+            )
+        )
+
+        self.warp_sounds = {}
+
+        for name, reverse in (("in", False), ("out", True)):
+
+            try:
+
+                path = (
+                    self.base_dir
+                    / "audio"
+                    / f"ui_sports_whoosh_{name}.wav"
+                )
+
+                path.parent.mkdir(parents=True, exist_ok=True)
+
+                if not path.exists():
+
+                    make_whoosh_wav(path, reverse=reverse)
+
+                effect = QSoundEffect(self)
+
+                effect.setSource(QUrl.fromLocalFile(str(path)))
+
+                effect.setVolume(0.9)
+
+                self.warp_sounds[name] = effect
+
+            except Exception as error:
+
+                print("WHOOSH SOUND ERROR:", error)
+
+
+        # Double-click anywhere empty on the HUD opens the Sports Nexus.
+        QApplication.instance().installEventFilter(
+            self
         )
 
         self.security_alert_overlay = (
@@ -1597,6 +1770,24 @@ class GlitchWindow(QMainWindow):
         )
 
 
+        # GLITCH speaks at the gate: "Scanning user", "Please show
+        # yourself...", "Sorry. You are not 404...", and a personal
+        # welcome that learns your routine (data/auth/owner_memory.json).
+        self.auth_voice = AuthVoice(
+            self.voice_engine,
+            self.data_dir,
+            enabled=lambda: getattr(self, "voice_enabled", True),
+            parent=self,
+            sounds_dir=self.base_dir / "audio",
+        )
+
+        self.auth_voice.attach(
+            self.auth_session
+        )
+
+        self._auth_greeting = None
+
+
         # =================================================
         # HOLO NAV CONNECTIONS
         # =================================================
@@ -1604,6 +1795,17 @@ class GlitchWindow(QMainWindow):
         for nav_key, nav_button in (
             self.holo_nav.buttons.items()
         ):
+
+            if nav_key == "CAREER_MATRIX":
+
+                # Same pipeline, with a direct fallback in case the
+                # navigation controller doesn't know this page yet.
+                nav_button.clicked.connect(
+                    lambda checked=False:
+                        self._open_career("MOUSE")
+                )
+
+                continue
 
             nav_button.clicked.connect(
                 lambda checked=False, key=nav_key:
@@ -1651,6 +1853,46 @@ class GlitchWindow(QMainWindow):
         self.voice_engine.voice_error.connect(
             self.handle_voice_error
         )
+
+
+        # =================================================
+        # GRID AMBIENCE (loops the whole time GLITCH is open)
+        # =================================================
+
+        self.ambience = AmbientPlayer(
+            self.base_dir / "audio" / "grid_ambience.wav",
+            volume=0.85,          # louder background (max 1.0)
+            duck_volume=0.60,     # level while you or GLITCH are talking
+            parent=self
+        )
+
+        self.ambience.start()
+
+        # The microphone hears the ambience too. Tell the listener what
+        # GLITCH is playing (voice + ambience) so neither one is ever
+        # mistaken for you talking or interrupts GLITCH mid-sentence.
+        self.voice_listener.set_echo_reference(
+            lambda: (
+                self.voice_engine.output_level()
+                + self.ambience.output_level()
+            )
+        )
+
+        # Drop to a whisper while GLITCH talks or while you talk,
+        # so it never covers the voice or confuses the microphone.
+        self.voice_engine.speech_started.connect(
+            lambda: self.ambience.duck("glitch", True)
+        )
+
+        self.voice_engine.speech_finished.connect(
+            lambda: self.ambience.duck("glitch", False)
+        )
+
+        if hasattr(self.voice_listener, "user_speaking"):
+
+            self.voice_listener.user_speaking.connect(
+                lambda speaking: self.ambience.duck("you", speaking)
+            )
 
 
         # =================================================
@@ -1832,6 +2074,51 @@ class GlitchWindow(QMainWindow):
 
         self.holo_projector.set_active(
             "HOME"
+        )
+
+
+        # Gesture / hologram toggles (saved between sessions).
+        self.hand_overlay.set_hologram_visible(
+            self.hand_hologram_enabled
+        )
+
+        QShortcut(
+            QKeySequence("Ctrl+G"),
+            self,
+            activated=lambda: self.set_gesture_control(
+                not self.gesture_control_enabled,
+                announce=True
+            )
+        )
+
+        QShortcut(
+            QKeySequence("Ctrl+P"),
+            self,
+            activated=lambda: self.set_performance_mode(
+                not self.performance_mode,
+                announce=True
+            )
+        )
+
+        self.performance_mode = False
+
+        if self.settings_data.get("performance_mode"):
+
+            QTimer.singleShot(
+                1500,
+                lambda: self.set_performance_mode(True)
+            )
+
+        # Prints where the UI freezes (see core/perf_monitor.py).
+        self.perf_monitor = PerfMonitor(self)
+
+        QShortcut(
+            QKeySequence("Ctrl+H"),
+            self,
+            activated=lambda: self.set_hand_hologram(
+                not self.hand_hologram_enabled,
+                announce=True
+            )
         )
 
 
@@ -3089,6 +3376,42 @@ class GlitchWindow(QMainWindow):
         )
 
 
+        self.gesture_checkbox = (
+            QCheckBox(
+                "GESTURE CONTROL  (SWIPE / PINCH / POINTER)   [CTRL+G]"
+            )
+        )
+
+        self.gesture_checkbox.setChecked(
+            self.gesture_control_enabled
+        )
+
+        self.gesture_checkbox.toggled.connect(
+            lambda checked: self.set_gesture_control(
+                checked,
+                announce=False
+            )
+        )
+
+
+        self.hologram_checkbox = (
+            QCheckBox(
+                "HOLOGRAPHIC HAND   [CTRL+H]"
+            )
+        )
+
+        self.hologram_checkbox.setChecked(
+            self.hand_hologram_enabled
+        )
+
+        self.hologram_checkbox.toggled.connect(
+            lambda checked: self.set_hand_hologram(
+                checked,
+                announce=False
+            )
+        )
+
+
         sound_label = QLabel(
             "GRID SOUND VOLUME"
         )
@@ -3150,6 +3473,41 @@ class GlitchWindow(QMainWindow):
 
         layout.addWidget(
             self.voice_checkbox
+        )
+
+
+        layout.addSpacing(
+            10
+        )
+
+        layout.addWidget(
+            self.gesture_checkbox
+        )
+
+        layout.addWidget(
+            self.hologram_checkbox
+        )
+
+
+        self.performance_checkbox = (
+            QCheckBox(
+                "PERFORMANCE MODE  (STILL BACKGROUND, SMOOTHER HUD)   [CTRL+P]"
+            )
+        )
+
+        self.performance_checkbox.setChecked(
+            bool(self.settings_data.get("performance_mode"))
+        )
+
+        self.performance_checkbox.toggled.connect(
+            lambda checked: self.set_performance_mode(
+                checked,
+                announce=False
+            )
+        )
+
+        layout.addWidget(
+            self.performance_checkbox
         )
 
 
@@ -3603,26 +3961,45 @@ class GlitchWindow(QMainWindow):
         # CONVERSATIONAL WAKE / SESSION GATE
         # =================================================
 
-        wake_word_used = (
-            command.startswith(
-                "glitch"
-            )
+        # "Glitch" can be anywhere in the sentence ("Hey Glitch...",
+        # "What's the weather, Glitch?"). Set GLITCH_REQUIRE_WAKE_WORD=0
+        # in .env to let GLITCH answer everything it hears.
+        extract_wake_word = getattr(
+            self.conversation_controller,
+            "extract_wake_word",
+            None
         )
+
+        if extract_wake_word is not None:
+
+            wake_word_used, command = extract_wake_word(
+                command
+            )
+
+        else:
+
+            # Older conversation_controller.py without the flexible
+            # wake word: fall back to "starts with glitch".
+            wake_word_used = command.startswith("glitch")
+
+            if wake_word_used:
+
+                command = command[len("glitch"):].strip(" ,.!?:;-")
+
+        if os.getenv("GLITCH_REQUIRE_WAKE_WORD", "1") == "0":
+
+            wake_word_used = True
 
 
         if wake_word_used:
 
-            self.conversation_controller.start_session()
+            if not self.conversation_controller.is_active():
 
+                self.conversation_controller.start_session()
 
-            command = (
-                command[
-                    len("glitch"):
-                ]
-                .strip(
-                    " ,.!?:;-"
-                )
-            )
+            else:
+
+                self.conversation_controller.touch()
 
 
         elif (
@@ -3636,6 +4013,13 @@ class GlitchWindow(QMainWindow):
 
 
         else:
+
+            # Heard, but not addressed to GLITCH. Say so on screen
+            # instead of silently ignoring it.
+            self.response_panel.set_response(
+                f'VOICE INPUT // HEARD: "{original}"  '
+                "// STANDING BY - SAY \"GLITCH\" TO WAKE ME"
+            )
 
             QTimer.singleShot(
                 1200,
@@ -3731,6 +4115,29 @@ class GlitchWindow(QMainWindow):
         self.adaptive_context_service.observe_user(
             command
         )
+
+
+        if self.handle_sports_command(
+            command,
+            "VOICE"
+        ):
+
+            return
+
+
+        if self.handle_career_command(
+            command,
+            "VOICE"
+        ):
+
+            return
+
+
+        if self.handle_gesture_toggle_command(
+            command
+        ):
+
+            return
 
 
         self.set_voice_input_status(
@@ -6676,6 +7083,29 @@ class GlitchWindow(QMainWindow):
         )
 
 
+        if self.handle_sports_command(
+            command,
+            "KEYBOARD"
+        ):
+
+            return
+
+
+        if self.handle_career_command(
+            command,
+            "KEYBOARD"
+        ):
+
+            return
+
+
+        if self.handle_gesture_toggle_command(
+            command
+        ):
+
+            return
+
+
         # =================================================
         # SAFE SYSTEM POWER CONTROL
         # =================================================
@@ -7126,6 +7556,12 @@ class GlitchWindow(QMainWindow):
             "show security": "SECURITY_MATRIX",
             "security hub": "SECURITY_MATRIX",
             "open security hub": "SECURITY_MATRIX",
+
+            "career matrix": "CAREER_MATRIX",
+            "open career matrix": "CAREER_MATRIX",
+            "show career matrix": "CAREER_MATRIX",
+            "career": "CAREER_MATRIX",
+            "careers": "CAREER_MATRIX",
         }
 
 
@@ -7330,6 +7766,15 @@ class GlitchWindow(QMainWindow):
             .strip()
             .upper()
         )
+
+        # The warp overlay is already doing the cinematic part.
+        if getattr(self, "_warp_in_progress", False):
+
+            self.pending_sweep_direction = 0
+
+            self.pending_sweep_vertical = False
+
+            return
 
 
         title, subtitle = PAGE_TITLES.get(
@@ -7554,6 +7999,26 @@ class GlitchWindow(QMainWindow):
                 16
             ),
 
+            # CAREER MATRIX: the next matrix after SECURITY (swipe left).
+            "CAREER_MATRIX": (
+                self.career_page,
+                "CAREER MATRIX // CAMPUS + JOBS + STYLE ONLINE",
+                getattr(self.holo_nav, "career_button", None),
+                "HOME",
+                0.90,
+                16
+            ),
+
+            # Hidden section: double-tap empty space or ask by voice.
+            "SPORTS": (
+                self.sports_page,
+                "SPORTS // HOLO-NEXUS ONLINE",
+                None,
+                "SPORTS",
+                0.90,
+                16
+            ),
+
             # SECURITY MATRIX is another HOME-adjacent system layer.
             # Until a dedicated sidebar control is added, HOME remains
             # highlighted while navigating internal GLITCH matrices.
@@ -7616,6 +8081,13 @@ class GlitchWindow(QMainWindow):
         )
 
 
+        if getattr(self, "authenticated", False) and hasattr(self, "auth_voice"):
+
+            self.auth_voice.note_page(
+                destination
+            )
+
+
         self.response_panel.set_response(
             response
         )
@@ -7627,6 +8099,11 @@ class GlitchWindow(QMainWindow):
 
 
         self.holo_projector.set_active(
+            destination
+        )
+
+
+        self.update_sports_theme(
             destination
         )
 
@@ -8313,6 +8790,955 @@ class GlitchWindow(QMainWindow):
         )
 
 
+    def open_career_matrix(self):
+
+        return self.navigate_to(
+            "CAREER_MATRIX"
+        )
+
+
+    # =====================================================
+    # PERFORMANCE MODE
+    # =====================================================
+
+    def _sync_reactor_visibility(self):
+
+        """Show the live reactor only when it can actually be seen."""
+
+        covered = (
+            hasattr(self, "sports_backdrop")
+            and self.current_mode == "SPORTS"
+            and self.sports_backdrop.is_fully_covering()
+        )
+
+        frozen = getattr(self, "performance_mode", False)
+
+        self.reactor.setVisible(not covered and not frozen)
+
+        snapshot = getattr(self, "_reactor_snapshot", None)
+
+        if snapshot is not None:
+
+            snapshot.setVisible(frozen and not covered)
+
+
+    def set_performance_mode(
+        self,
+        enabled,
+        announce=False
+    ):
+
+        """Freeze the animated reactor into a still image (it repaints
+        the whole window many times a second), and calm the hand
+        hologram to 30 fps."""
+
+        enabled = bool(enabled)
+
+        if enabled and not getattr(self, "performance_mode", False):
+
+            # Take the still before hiding the live reactor (grab()
+            # renders it even if it's currently hidden).
+            if True:
+
+                pixmap = self.reactor.grab()
+
+                if getattr(self, "_reactor_snapshot", None) is None:
+
+                    self._reactor_snapshot = QLabel(
+                        self.central_widget
+                    )
+
+                    self._reactor_snapshot.setScaledContents(True)
+
+                    self._reactor_snapshot.setAttribute(
+                        Qt.WidgetAttribute.WA_TransparentForMouseEvents,
+                        True
+                    )
+
+                self._reactor_snapshot.setPixmap(pixmap)
+
+                self._reactor_snapshot.setGeometry(
+                    self.reactor.geometry()
+                )
+
+                self.update_layout()
+
+        self.performance_mode = enabled
+
+        self.settings_data["performance_mode"] = enabled
+
+        self.save_settings()
+
+        self.hand_overlay._timer.setInterval(
+            33 if enabled else 16
+        )
+
+        if hasattr(self, "performance_checkbox"):
+
+            self.performance_checkbox.blockSignals(True)
+
+            self.performance_checkbox.setChecked(enabled)
+
+            self.performance_checkbox.blockSignals(False)
+
+        self._sync_reactor_visibility()
+
+        if announce:
+
+            self.say_confirmation(
+                "Enabling performance mode. The background is now still."
+                if enabled
+                else "Disabling performance mode. Full animation is back."
+            )
+
+
+    # =====================================================
+    # GESTURE / HOLOGRAM TOGGLES
+    # =====================================================
+
+    def set_gesture_control(
+        self,
+        enabled,
+        announce=False
+    ):
+
+        """Turn hand control (camera tracking, swipes, pinch, pointer)
+        on or off. Off releases the camera completely."""
+
+        enabled = bool(enabled)
+
+        self.gesture_control_enabled = enabled
+
+        self.settings_data["gesture_control_enabled"] = enabled
+
+        self.save_settings()
+
+        if hasattr(self, "gesture_checkbox"):
+
+            self.gesture_checkbox.blockSignals(True)
+
+            self.gesture_checkbox.setChecked(enabled)
+
+            self.gesture_checkbox.blockSignals(False)
+
+        if enabled:
+
+            self._resume_hand_tracking()
+
+        else:
+
+            try:
+
+                self.hand_tracker.stop()
+
+            except Exception:
+
+                pass
+
+            self.hand_overlay.clear_hand()
+
+            self.clear_finger_hover()
+
+            self.status_panel.set_gesture_status(
+                "DISABLED"
+            )
+
+        if announce:
+
+            self.say_confirmation(
+                "Enabling gesture control."
+                if enabled
+                else "Disabling gesture control. The camera is off."
+            )
+
+
+    def _resume_hand_tracking(
+        self,
+        attempts=12
+    ):
+
+        """Restart tracking; if the previous run is still shutting
+        down, try again shortly."""
+
+        if not self.gesture_control_enabled or not self.authenticated:
+
+            return
+
+        if self.hand_thread.isRunning():
+
+            if self.hand_tracker.running:
+
+                return
+
+            if attempts > 0:
+
+                QTimer.singleShot(
+                    250,
+                    lambda: self._resume_hand_tracking(attempts - 1)
+                )
+
+            return
+
+        self.start_hand_tracking()
+
+
+    def set_hand_hologram(
+        self,
+        visible,
+        announce=False
+    ):
+
+        """Show or hide the holographic hand. Gestures keep working;
+        the fingertip pointer and button brackets stay visible."""
+
+        visible = bool(visible)
+
+        self.hand_hologram_enabled = visible
+
+        self.settings_data["hand_hologram_enabled"] = visible
+
+        self.save_settings()
+
+        self.hand_overlay.set_hologram_visible(visible)
+
+        if hasattr(self, "hologram_checkbox"):
+
+            self.hologram_checkbox.blockSignals(True)
+
+            self.hologram_checkbox.setChecked(visible)
+
+            self.hologram_checkbox.blockSignals(False)
+
+        if self.gesture_control_enabled and self.hand_thread.isRunning():
+
+            self.status_panel.set_gesture_status(
+                "TRACKING" if visible else "TRACKING // HOLO OFF"
+            )
+
+        if announce:
+
+            self.say_confirmation(
+                "Showing the holographic hand."
+                if visible
+                else "Hiding the holographic hand. Gestures still work."
+            )
+
+
+    GESTURE_WORDS = (
+        "gesture", "gestures", "hand tracking", "hand control",
+        "finger swipe", "finger swipes", "swipe", "swipes", "swiping",
+        "hand gestures", "finger tracking", "tracking my hand",
+    )
+
+    HOLOGRAM_WORDS = (
+        "hologram", "holographic", "hand hologram", "finger hologram",
+        "holo hand", "skeleton hand",
+    )
+
+
+    def handle_gesture_toggle_command(
+        self,
+        command
+    ):
+
+        """'turn off gestures', 'enable finger swipe', 'hide the
+        hologram', 'holographic hand on', 'toggle gestures' ..."""
+
+        lowered = (
+            " "
+            + command
+            .strip()
+            .lower()
+            .strip(" ,.!?")
+            + " "
+        )
+
+        off_words = (
+            " off ", " disable", " deactivate", " hide", " stop",
+            " turn off", " switch off", " kill",
+        )
+
+        on_words = (
+            " on ", " enable", " activate", " show", " start",
+            " turn on", " switch on", " bring back",
+        )
+
+        toggle = " toggle" in lowered
+
+        wants_off = any(word in lowered for word in off_words)
+
+        wants_on = any(word in lowered for word in on_words)
+
+        # "turn on ..." contains " on " as well as " turn on".
+        if wants_off and wants_on:
+
+            first_off = min(
+                (lowered.find(word) for word in off_words if word in lowered),
+                default=10**6
+            )
+
+            first_on = min(
+                (lowered.find(word) for word in on_words if word in lowered),
+                default=10**6
+            )
+
+            wants_off = first_off < first_on
+
+            wants_on = not wants_off
+
+        if not (toggle or wants_off or wants_on):
+
+            return False
+
+        if "performance mode" in lowered or "smooth mode" in lowered:
+
+            target = (
+                not self.performance_mode
+                if toggle
+                else wants_on
+            )
+
+            self.set_performance_mode(
+                target,
+                announce=True
+            )
+
+            return True
+
+        about_hologram = any(word in lowered for word in self.HOLOGRAM_WORDS)
+
+        about_gestures = any(word in lowered for word in self.GESTURE_WORDS)
+
+        # "holographic finger swipe" -> it's about the swipe control.
+        if about_hologram and about_gestures and "swipe" not in lowered and "tracking" not in lowered:
+
+            about_gestures = False
+
+        if about_gestures:
+
+            target = (
+                not self.gesture_control_enabled
+                if toggle
+                else wants_on
+            )
+
+            self.set_gesture_control(
+                target,
+                announce=True
+            )
+
+            return True
+
+        if about_hologram:
+
+            target = (
+                not self.hand_hologram_enabled
+                if toggle
+                else wants_on
+            )
+
+            self.set_hand_hologram(
+                target,
+                announce=True
+            )
+
+            return True
+
+        return False
+
+
+    # =====================================================
+    # CAREER MATRIX
+    # =====================================================
+
+    CAREER_GARMENTS = (
+        ("quarter zip", "top", "QUARTER-ZIP"),
+        ("quarter-zip", "top", "QUARTER-ZIP"),
+        ("button up", "top", "BUTTON-UP"),
+        ("button-up", "top", "BUTTON-UP"),
+        ("dress shirt", "top", "BUTTON-UP"),
+        ("hoodie", "top", "HOODIE"),
+        ("polo", "top", "POLO"),
+        ("t-shirt", "top", "TEE"),
+        ("tshirt", "top", "TEE"),
+        ("tee", "top", "TEE"),
+        ("shirt", "top", "BUTTON-UP"),
+        ("blazer", "top", "SUIT JACKET"),
+        ("sweatpants", "bottom", "SWEATPANTS"),
+        ("joggers", "bottom", "JOGGERS"),
+        ("shorts", "bottom", "SHORTS"),
+        ("jeans", "bottom", "JEANS"),
+        ("chinos", "bottom", "CHINOS"),
+        ("slacks", "bottom", "SUIT PANTS"),
+        ("dress shoes", "shoes", "DRESS SHOES"),
+        ("loafers", "shoes", "DRESS SHOES"),
+        ("high tops", "shoes", "HIGH-TOPS"),
+        ("high-tops", "shoes", "HIGH-TOPS"),
+        ("sneakers", "shoes", "SNEAKERS"),
+        ("shoes", "shoes", "SNEAKERS"),
+        ("boots", "shoes", "BOOTS"),
+        ("slides", "shoes", "SLIDES"),
+    )
+
+    CAREER_WORDS = {
+        "shade": {
+            "emerald": "EMERALD", "forest": "FOREST", "hunter": "HUNTER",
+            "olive": "OLIVE", "sage": "SAGE", "mint": "MINT",
+            "neon": "NEON", "lime": "NEON",
+        },
+        "fit": {"slim": "SLIM", "oversized": "OVERSIZED", "baggy": "OVERSIZED", "regular": "REGULAR"},
+        "style": {
+            "streetwear": "STREETWEAR", "business": "BUSINESS", "athletic": "ATHLETIC",
+            "gym": "ATHLETIC", "techwear": "TECHWEAR", "smart casual": "SMART CASUAL",
+        },
+    }
+
+
+    def _open_career(
+        self,
+        source,
+        tab=None
+    ):
+
+        if not self.authenticated:
+
+            return
+
+        if tab:
+
+            self.career_page.set_tab(tab)
+
+        if self.current_mode != "CAREER_MATRIX":
+
+            self.navigate_with_intent(
+                "CAREER_MATRIX",
+                source
+            )
+
+            if self.current_mode != "CAREER_MATRIX":
+
+                self.show_page(
+                    "CAREER_MATRIX"
+                )
+
+
+    def handle_career_command(
+        self,
+        command,
+        source="VOICE"
+    ):
+
+        """Career Matrix navigation and the outfit Customizer by
+        voice. Questions ('what's happening on campus?', 'any
+        internships?') fall through to the AI, which gets the live
+        Career Matrix data as context."""
+
+        lowered = (
+            command
+            .strip()
+            .lower()
+            .strip(" ,.!?")
+        )
+
+        opening = lowered.startswith(
+            (
+                "open", "show", "pull up", "bring up", "go to",
+                "launch", "take me to", "switch to",
+            )
+        )
+
+        # ---- outfit: recommendation
+        if any(
+            phrase in lowered
+            for phrase in (
+                "what should i wear", "recommend an outfit", "recommend me an outfit",
+                "pick my outfit", "pick an outfit", "pick my fit", "outfit for today",
+                "what do i wear", "style me",
+            )
+        ):
+
+            self._open_career(source, "STYLE")
+
+            self.career_page.recommend(command)
+
+            self.say_confirmation(
+                "Picking your fit."
+            )
+
+            return True
+
+        # ---- outfit: find specific pieces
+        if lowered.startswith(("find me", "find a", "find some", "search for", "look for", "get me")):
+
+            changes = {}
+
+            for word, category, value in self.CAREER_GARMENTS:
+
+                if word in lowered and category not in changes:
+
+                    changes[category] = value
+
+            if "suit" in lowered and "top" not in changes:
+
+                changes.update(
+                    {"top": "SUIT JACKET", "bottom": "SUIT PANTS", "shoes": "DRESS SHOES", "style": "BUSINESS"}
+                )
+
+            if not changes:
+
+                return False
+
+            for category, words in self.CAREER_WORDS.items():
+
+                for word, value in words.items():
+
+                    if word in lowered:
+
+                        changes[category] = value
+
+            budget = re.search(r"under \$?(\d+)", lowered)
+
+            if budget:
+
+                amount = int(budget.group(1))
+
+                changes["budget"] = next(
+                    (option for option in ("$50", "$100", "$200", "$400") if amount <= int(option[1:])),
+                    "ANY"
+                )
+
+            self._open_career(source, "STYLE")
+
+            for category, value in changes.items():
+
+                self.career_page.choose(category, value)
+
+            self.career_page.find(command)
+
+            self.say_confirmation(
+                "Searching stores for that look."
+            )
+
+            return True
+
+        if not opening and lowered not in ("career", "careers", "career matrix", "the career matrix"):
+
+            return False
+
+        # ---- navigation
+        if "career" in lowered:
+
+            self._open_career(source)
+
+            self.say_confirmation("Opening the Career Matrix.")
+
+            return True
+
+        tab = None
+
+        if any(word in lowered for word in ("job", "internship", "handshake")):
+
+            tab = "JOBS"
+
+        elif "campus" in lowered or "istrike" in lowered or "famu" in lowered:
+
+            tab = "CAMPUS"
+
+        elif "news" in lowered or "headlines" in lowered:
+
+            tab = "WORLD"
+
+        elif any(word in lowered for word in ("outfit", "customizer", "my style", "my fit", "wardrobe")):
+
+            tab = "STYLE"
+
+        if tab is None:
+
+            return False
+
+        self._open_career(source, tab)
+
+        self.say_confirmation(
+            {
+                "JOBS": "Pulling up your job leads.",
+                "CAMPUS": "Pulling up campus intel.",
+                "WORLD": "Pulling up the news.",
+                "STYLE": "Opening the Customizer.",
+            }[tab]
+        )
+
+        return True
+
+
+    # =====================================================
+    # SPORTS NEXUS
+    # =====================================================
+
+    def toggle_sports_nexus(
+        self,
+        source="GESTURE",
+        team_key=None
+    ):
+
+        """Warp into the Sports Nexus, or back to where you were."""
+
+        if not self.authenticated:
+
+            return
+
+        if self.warp_overlay.is_playing():
+
+            return
+
+        entering = (
+            self.current_mode != "SPORTS"
+        )
+
+        if team_key:
+
+            self.sports_page.select_team(team_key)
+
+        if entering:
+
+            self._pre_sports_mode = (
+                self.current_mode
+            )
+
+            target = "SPORTS"
+
+            title, subtitle = PAGE_TITLES.get(
+                "SPORTS",
+                ("SPORTS NEXUS", "")
+            )
+
+            tint = self.sports_page._colors()[0]
+
+        else:
+
+            target = (
+                self._pre_sports_mode
+                or "HOME"
+            )
+
+            title, subtitle = PAGE_TITLES.get(
+                target,
+                (target.replace("_", " "), "HUD ONLINE")
+            )
+
+            tint = None
+
+        sound = self.warp_sounds.get(
+            "in" if entering else "out"
+        )
+
+        if sound is not None:
+
+            sound.stop()
+
+            sound.play()
+
+        self.reactor.trigger_glitch(
+            1.2,
+            20
+        )
+
+        self.warp_overlay.play(
+            title,
+            subtitle,
+            reverse=not entering,
+            tint=tint,
+            on_peak=lambda: self._warp_navigate(
+                target,
+                source
+            )
+        )
+
+
+    def _sports_themed_widgets(self):
+
+        """HUD panels recoloured to the team while in the Nexus."""
+
+        names = (
+            "status_panel",
+            "response_panel",
+            "command_bar",
+            "voice_input_badge",
+            "holo_nav",
+            "holo_projector",
+        )
+
+        return [
+            getattr(self, name)
+            for name in names
+            if hasattr(self, name)
+        ]
+
+
+    def update_sports_theme(
+        self,
+        destination
+    ):
+
+        """Team colours on, or back to GLITCH green."""
+
+        if not hasattr(self, "sports_backdrop") or not hasattr(self, "sports_page"):
+
+            return
+
+        active = (
+            str(destination).upper() == "SPORTS"
+        )
+
+        theme = self.sports_page.theme()
+
+        self.sports_backdrop.set_theme(theme)
+
+        self.sports_backdrop.activate(active)
+
+        # The hand hologram / pointer takes the team colour too
+        # (Jaguars teal, Celtics green, Patriots blue), GLITCH green
+        # everywhere else.
+        if hasattr(self.hand_overlay, "set_tint"):
+
+            self.hand_overlay.set_tint(
+                theme["accent"] if active else None
+            )
+
+        # GLITCH remembers which team you follow (for the welcome).
+        if active and getattr(self, "authenticated", False) and hasattr(self, "auth_voice"):
+
+            self.auth_voice.note_team(
+                self.sports_page.current_team_name()
+            )
+
+        # The reactor is invisible behind the opaque team backdrop, but
+        # its animation would still force full-window repaints. Pause it.
+        if active:
+
+            QTimer.singleShot(
+                int(self.sports_backdrop.FADE_S * 1000) + 120,
+                self._sync_reactor_visibility
+            )
+
+        else:
+
+            self._sync_reactor_visibility()
+
+        # Screen-blend tint: dark areas take a mid-tone of the team
+        # colour, light text stays light, so panels stay readable.
+        accent = QColor(theme["accent"])
+
+        hue, saturation, _, _ = accent.getHsvF()
+
+        tint = QColor.fromHsvF(
+            max(0.0, hue),
+            min(1.0, saturation),
+            0.55
+        )
+
+        for widget in self._sports_themed_widgets():
+
+            effect = widget.graphicsEffect()
+
+            if active:
+
+                if effect is None:
+
+                    effect = QGraphicsColorizeEffect(widget)
+
+                    widget.setGraphicsEffect(effect)
+
+                if isinstance(effect, QGraphicsColorizeEffect):
+
+                    effect.setColor(tint)
+
+                    effect.setStrength(1.0)
+
+            elif isinstance(effect, QGraphicsColorizeEffect):
+
+                widget.setGraphicsEffect(None)
+
+
+    def _warp_navigate(
+        self,
+        target,
+        source
+    ):
+
+        self._warp_in_progress = True
+
+        try:
+
+            self.navigate_with_intent(
+                target,
+                source
+            )
+
+            # Fallback if the command router doesn't know SPORTS.
+            if self.current_mode != target:
+
+                self.show_page(
+                    target
+                )
+
+        finally:
+
+            self._warp_in_progress = False
+
+
+    SPORTS_OPEN_WORDS = (
+        "open", "show", "pull up", "bring up", "go to",
+        "launch", "take me to", "switch to",
+    )
+
+    SPORTS_CLOSE_PHRASES = {
+        "close sports", "exit sports", "leave sports",
+        "close the sports nexus", "exit the sports nexus",
+        "go back", "back out",
+    }
+
+
+    def handle_sports_command(
+        self,
+        command,
+        source="VOICE"
+    ):
+
+        """Deterministic sports navigation. Questions ('how are the
+        Celtics doing?') fall through to the AI, which gets the live
+        sports data as context."""
+
+        lowered = (
+            command
+            .strip()
+            .lower()
+            .strip(" ,.!?")
+        )
+
+        if (
+            lowered in self.SPORTS_CLOSE_PHRASES
+            and self.current_mode == "SPORTS"
+        ):
+
+            self.toggle_sports_nexus(source)
+
+            self.say_confirmation(
+                "Closing the Sports Nexus."
+            )
+
+            return True
+
+        wants_open = any(
+            lowered.startswith(word)
+            for word in self.SPORTS_OPEN_WORDS
+        )
+
+        if not wants_open:
+
+            return False
+
+        team_key = (
+            self.sports_service
+            .match_team(
+                lowered
+            )
+        )
+
+        mentions_sports = any(
+            word in lowered
+            for word in (
+                "sports", "my teams", "scores",
+            )
+        )
+
+        if team_key is None and not mentions_sports:
+
+            return False
+
+        if self.current_mode == "SPORTS":
+
+            if team_key:
+
+                self.sports_page.select_team(
+                    team_key
+                )
+
+        else:
+
+            self.toggle_sports_nexus(
+                source,
+                team_key
+            )
+
+        if team_key:
+
+            self.say_confirmation(
+                f"Pulling up the {self.sports_page.current_team_name()}."
+            )
+
+        else:
+
+            self.say_confirmation(
+                "Opening the Sports Nexus."
+            )
+
+        return True
+
+
+    def eventFilter(
+        self,
+        watched,
+        event
+    ):
+
+        """Double-click on empty HUD space toggles the Sports Nexus."""
+
+        try:
+
+            if (
+                event.type() == QEvent.Type.MouseButtonDblClick
+                and isinstance(watched, QWidget)
+                and watched.window() is self
+                and self.authenticated
+            ):
+
+                widget = watched
+
+                while widget is not None and widget is not self:
+
+                    if isinstance(
+                        widget,
+                        (
+                            QAbstractButton,
+                            QLineEdit,
+                            QTextEdit,
+                            QPlainTextEdit,
+                            QAbstractSlider,
+                            QAbstractSpinBox,
+                            QComboBox,
+                        )
+                    ):
+
+                        return False
+
+                    widget = widget.parentWidget()
+
+                self.toggle_sports_nexus(
+                    "MOUSE"
+                )
+
+                return True
+
+        except Exception as error:
+
+            print("DOUBLE-TAP FILTER ERROR:", error)
+
+        return super().eventFilter(
+            watched,
+            event
+        )
+
+
     # =====================================================
     # SWIPE CONTROL
     # =====================================================
@@ -8320,6 +9746,22 @@ class GlitchWindow(QMainWindow):
     def handle_swipe_left(self):
 
         if not self.authenticated:
+            return
+
+        if not self.gesture_control_enabled:
+            return
+
+
+        if self.current_mode == "SPORTS":
+
+            self.sports_page.next_team(1)
+
+            self.hand_overlay.flash_swipe(1)
+
+            self.response_panel.set_response(
+                f"SPORTS // {self.sports_page.current_team_name().upper()}"
+            )
+
             return
 
 
@@ -8354,6 +9796,22 @@ class GlitchWindow(QMainWindow):
         if not self.authenticated:
             return
 
+        if not self.gesture_control_enabled:
+            return
+
+
+        if self.current_mode == "SPORTS":
+
+            self.sports_page.next_team(-1)
+
+            self.hand_overlay.flash_swipe(-1)
+
+            self.response_panel.set_response(
+                f"SPORTS // {self.sports_page.current_team_name().upper()}"
+            )
+
+            return
+
 
         self.pending_sweep_direction = -1
 
@@ -8384,6 +9842,9 @@ class GlitchWindow(QMainWindow):
     def handle_swipe_up(self):
 
         if not self.authenticated:
+            return
+
+        if not self.gesture_control_enabled:
             return
 
 
@@ -8422,6 +9883,9 @@ class GlitchWindow(QMainWindow):
     def handle_swipe_down(self):
 
         if not self.authenticated:
+            return
+
+        if not self.gesture_control_enabled:
             return
 
 
@@ -8508,6 +9972,9 @@ class GlitchWindow(QMainWindow):
 
 
         self.auth_overlay.raise_()
+
+
+        self.auth_voice.session_started()
 
 
         self.auth_session.begin()
@@ -8620,6 +10087,10 @@ class GlitchWindow(QMainWindow):
         )
 
 
+        # Personal welcome while the unlock animation plays.
+        self._auth_greeting = self.auth_voice.granted()
+
+
     def handle_auth_granted(
         self,
         result
@@ -8634,6 +10105,10 @@ class GlitchWindow(QMainWindow):
         self.auth_overlay.show_granted(
             "404"
         )
+
+
+        # Personal welcome while the unlock animation plays.
+        self._auth_greeting = self.auth_voice.granted()
 
 
     def handle_auth_denied(
@@ -8731,6 +10206,22 @@ class GlitchWindow(QMainWindow):
 
     def startup_greeting(self):
 
+        # The biometric gate already welcomed you out loud; show the
+        # same words on screen instead of saying hello twice.
+        if getattr(self, "_auth_greeting", None):
+
+            self.response_panel.set_response(
+                self._auth_greeting
+            )
+
+            self.reactor.trigger_glitch(
+                0.45,
+                8
+            )
+
+            return
+
+
         greeting = (
             "Hello 404. What's on the agenda?"
         )
@@ -8785,6 +10276,15 @@ class GlitchWindow(QMainWindow):
     def handle_barge_in(self):
 
         if not self.voice_output_active:
+
+            return
+
+        # Only let you cut GLITCH off mid-conversation. Greetings and
+        # announcements (like "Hello 404") always finish.
+        if not (
+            hasattr(self, "conversation_controller")
+            and self.conversation_controller.is_active()
+        ):
 
             return
 
@@ -8888,6 +10388,15 @@ class GlitchWindow(QMainWindow):
             return
 
 
+        if not self.gesture_control_enabled:
+
+            self.status_panel.set_gesture_status(
+                "DISABLED"
+            )
+
+            return
+
+
         if not self.hand_thread.isRunning():
 
             self.status_panel.set_gesture_status(
@@ -8902,6 +10411,8 @@ class GlitchWindow(QMainWindow):
 
         self.status_panel.set_gesture_status(
             "TRACKING"
+            if self.hand_hologram_enabled
+            else "TRACKING // HOLO OFF"
         )
 
 
@@ -8913,6 +10424,8 @@ class GlitchWindow(QMainWindow):
 
         self.status_panel.set_gesture_status(
             "OFFLINE"
+            if self.gesture_control_enabled
+            else "DISABLED"
         )
 
 
@@ -9094,6 +10607,10 @@ class GlitchWindow(QMainWindow):
 
             return
 
+        if not self.gesture_control_enabled:
+
+            return
+
         self.hand_overlay.set_pointer(
             normalized_x,
             normalized_y
@@ -9155,12 +10672,29 @@ class GlitchWindow(QMainWindow):
 
             return
 
+        if not self.gesture_control_enabled:
+
+            return
+
         hit = self._hud_button_at(
             normalized_x,
             normalized_y
         )
 
         if hit is None:
+
+            # Two quick taps on empty space = jump to the Sports Nexus.
+            now = time.perf_counter()
+
+            if now - self._last_empty_tap < 0.65:
+
+                self._last_empty_tap = 0.0
+
+                self.toggle_sports_nexus("GESTURE")
+
+                return
+
+            self._last_empty_tap = now
 
             self.response_panel.set_response(
                 "GESTURE // PINCH DETECTED // NO HUD TARGET"
@@ -9246,6 +10780,13 @@ class GlitchWindow(QMainWindow):
         self,
         active_button
     ):
+
+        if active_button is None:
+
+            # Pages without a nav node (Sports Nexus): clear highlight.
+            self.holo_nav.set_active("")
+
+            return
 
         self.holo_nav.set_active_button(
             active_button
@@ -9501,6 +11042,30 @@ class GlitchWindow(QMainWindow):
         )
 
 
+        self.sports_backdrop.setGeometry(
+            0,
+            0,
+            width,
+            height
+        )
+
+        if getattr(self, "_reactor_snapshot", None) is not None:
+
+            self._reactor_snapshot.setGeometry(
+                0,
+                0,
+                width,
+                height
+            )
+
+        # Order: reactor (bottom) -> still snapshot -> sports backdrop
+        # -> everything else.
+        self.sports_backdrop.lower()
+
+        if getattr(self, "_reactor_snapshot", None) is not None:
+
+            self._reactor_snapshot.lower()
+
         self.reactor.lower()
 
         self.holo_projector.raise_()
@@ -9531,6 +11096,12 @@ class GlitchWindow(QMainWindow):
         self.hand_overlay.raise_()
 
         self.transition_overlay.raise_()
+
+        self.warp_overlay.setGeometry(
+            self.central_widget.rect()
+        )
+
+        self.warp_overlay.raise_()
 
 
         if hasattr(
@@ -9585,6 +11156,15 @@ class GlitchWindow(QMainWindow):
     ):
 
         self.save_settings()
+
+
+        try:
+
+            self.ambience.stop(0.2)
+
+        except Exception:
+
+            pass
 
 
         try:

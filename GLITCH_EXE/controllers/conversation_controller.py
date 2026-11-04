@@ -14,6 +14,7 @@ follow-up speech is accepted without requiring "Glitch" again.
 """
 
 import random
+import re
 import time
 from collections import deque
 from datetime import datetime
@@ -208,6 +209,58 @@ class ConversationController:
             except Exception:
 
                 pass
+
+
+    # ---------------------------------------------------------
+    # WAKE WORD
+    # ---------------------------------------------------------
+
+    # "Glitch" anywhere in the sentence, like you'd use a person's
+    # name: "Glitch, what's the weather?", "Hey Glitch ...",
+    # "What's the weather, Glitch?". Includes common mis-hearings.
+    WAKE_PATTERN = re.compile(
+        r"(?:\b(?:hey|hi|okay|ok|yo|so)[\s,]+)?"
+        r"\b(?:glitch(?:\.exe)?|glitches|glitch's|glitchy|clitch|klitch|glich)\b"
+        r"[\s,.!?:;-]*",
+        re.IGNORECASE,
+    )
+
+    def extract_wake_word(
+        self,
+        command
+    ):
+
+        """Return (wake_word_used, command_without_it)."""
+
+        command = command or ""
+
+        # Only count it as addressing GLITCH at the start or the end of
+        # the sentence, so "the glitch in my code" isn't a wake-up.
+        match = None
+
+        for candidate in self.WAKE_PATTERN.finditer(command):
+
+            before = command[:candidate.start()].strip(" ,.!?:;-")
+
+            after = command[candidate.end():].strip(" ,.!?:;-")
+
+            if not before or not after:
+
+                match = candidate
+
+                break
+
+        if not match:
+
+            return False, command.strip()
+
+        rest = (
+            command[:match.start()] + " " + command[match.end():]
+        )
+
+        rest = re.sub(r"\s+", " ", rest).strip(" ,.!?:;-")
+
+        return True, rest
 
 
     # ---------------------------------------------------------
