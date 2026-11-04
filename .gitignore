@@ -57,3 +57,23 @@ GLITCH_EXE/data/glitch_profile.json
 *.sqlite-shm
 *.sqlite3-wal
 *.sqlite3-shm
+
+
+# =====================================================
+# GLITCH.EXE // PRIVATE + RUNTIME DATA
+# =====================================================
+
+GLITCH_EXE/data/auth/
+GLITCH_EXE/data/voice_cache/
+
+GLITCH_EXE/data/conversation_history.json
+GLITCH_EXE/data/glitch_profile.json
+
+GLITCH_EXE/data/career_cache.json
+GLITCH_EXE/data/career_profile.json
+
+GLITCH_EXE/data/sports_cache.json
+GLITCH_EXE/data/sports_teams.json
+
+GLITCH_EXE/data/*.db-shm
+GLITCH_EXE/data/*.db-wal
